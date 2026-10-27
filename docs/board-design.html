@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Partner — Desain Papan Carrier ESP32-CAM (DRAFT)</title>
+<style>
+  :root{
+    --paper:#f6efe3; --grid:rgba(120,100,70,.14); --ink:#3b3327;
+    --teal:#1f6f6b; --ochre:#8a5a00; --ochre-line:#b97d10;
+    --coral:#c2503c; --violet:#7a4f9e; --line:#8a7a5e; --card:#fffdf7;
+    --gnd:#7d7d7d;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:24px;color:var(--ink);line-height:1.5;
+    font-family:Georgia,'Times New Roman',serif;background-color:var(--paper);
+    background-image:linear-gradient(var(--grid) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid) 1px,transparent 1px);
+    background-size:24px 24px;
+  }
+  .wrap{max-width:1040px;margin:0 auto}
+  h1,h2,h3{font-family:Georgia,serif;color:var(--teal);margin:0 0 8px}
+  h1{font-size:1.9rem;border-bottom:3px double var(--teal);padding-bottom:10px}
+  h2{font-size:1.25rem;margin-top:32px}
+  .badge{display:inline-block;background:var(--coral);color:#fff;
+    font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.75rem;
+    padding:3px 10px;border-radius:3px;letter-spacing:.08em;
+    margin:10px 0 4px;text-transform:uppercase}
+  p.lede{max-width:70ch}
+  .card{background:var(--card);border:1.5px solid var(--line);border-radius:6px;
+    padding:16px 18px;margin:14px 0;box-shadow:2px 3px 0 rgba(90,70,40,.12)}
+  .diagram-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .diagram-scroll:focus{outline:2px solid var(--teal);outline-offset:2px}
+  .scroll-hint{display:none;font-size:.8rem;color:var(--ochre);
+    font-family:ui-monospace,Menlo,Consolas,monospace;margin-bottom:4px}
+  svg{display:block;height:auto}
+  .svg-title{font-family:Georgia,serif;font-weight:bold}
+  .svg-label{font-family:ui-monospace,Menlo,Consolas,monospace}
+  .sig{stroke:var(--teal);stroke-width:2;fill:none}
+  .pwr5{stroke:var(--ochre-line);stroke-width:3;fill:none}
+  .v33{stroke:var(--violet);stroke-width:2;fill:none;stroke-dasharray:7 3}
+  .gnd{stroke:var(--gnd);stroke-width:2;fill:none;stroke-dasharray:4 4}
+  .onboard{stroke:var(--gnd);stroke-width:1.5;fill:none}
+  .cond{stroke-dasharray:6 4}
+  table{border-collapse:collapse;width:100%;font-size:.92rem}
+  th,td{border:1px solid var(--line);padding:6px 10px;text-align:left}
+  th{background:var(--teal);color:#fff;font-weight:normal;letter-spacing:.03em}
+  tr:nth-child(even) td{background:rgba(185,125,16,.07)}
+  td.pin,td.sig-t{font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--ochre);font-weight:bold}
+  td.gp{font-family:ui-monospace,Menlo,Consolas,monospace;color:var(--teal);font-weight:bold}
+  .note{border-left:4px solid var(--coral);padding-left:12px;font-size:.9rem}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .tag{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.72rem;
+    color:var(--teal);border:1px solid var(--teal);border-radius:3px;padding:1px 6px}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:.85rem;align-items:center}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .swatch{display:inline-block;width:34px;height:0;border-top:3px solid}
+  ul{padding-left:20px}
+  a{color:var(--teal)}
+  @media(max-width:720px){
+    body{padding:12px}
+    .cols{grid-template-columns:1fr}
+    h1{font-size:1.45rem}
+    .scroll-hint{display:block}
+    svg{width:900px;max-width:none}
+    th,td{padding:4px 6px;font-size:.8rem;overflow-wrap:break-word;word-break:break-word}
+    table{table-layout:fixed}
+  }
+  @media print{
+    body{background:#fff;padding:10px}
+    .card{box-shadow:none;page-break-inside:avoid}
+    h2{page-break-after:avoid}
+    .scroll-hint{display:none}
+    svg{width:100%!important;max-width:100%!important;height:auto}
+    details.diagram2d>*:not(summary){display:block}
+  }
+</style>
+<link rel="stylesheet" href="board-viewer.css">
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Partner — Desain Papan Carrier ESP32-CAM</h1>
+<span class="badge">Draft untuk Review</span>
+<p class="lede">Diagram <strong>logis</strong> carrier edukasi untuk modul <strong>ESP32-CAM klasik
+(AI-Thinker-style)</strong> + base programmer (kemungkinan ESP32-CAM-MB). Garis pada diagram =
+<strong>koneksi logis, bukan trace PCB</strong>; posisi kotak bukan posisi fisik manufaktur.
+Kamera OV2640 (FFC) dan slot microSD sudah <strong>onboard</strong> — ditandai "pre-wired".
+Lihat <a href="05-hardware-pins.md">05-hardware-pins.md</a>,
+<a href="06-board-design.md">06-board-design.md</a>, dan
+<a href="README.md">README.md</a>.</p>
+
+<div class="card legend">
+  <strong>Legenda:</strong>
+  <span><i class="swatch" style="border-color:var(--teal)"></i> sinyal GPIO (label pin)</span>
+  <span><i class="swatch" style="border-color:var(--ochre-line)"></i> daya 5V (titik isi = terminal)</span>
+  <span><i class="swatch" style="border-color:var(--violet);border-top-style:dashed"></i> rail 3V3 (onboard)</span>
+  <span><i class="swatch" style="border-color:var(--gnd);border-top-style:dashed"></i> GND (titik kosong = terminal)</span>
+  <span><i class="swatch" style="border-color:var(--gnd);border-top-width:1.5px"></i> koneksi onboard pabrik</span>
+  <span style="border:1.5px dashed var(--line);border-radius:3px;padding:0 8px">conditional / opsional</span>
+</div>
+
+<h2>Visualisasi 3D (interaktif)</h2>
+<div class="card">
+<p class="scroll-hint">Model 3D interaktif memerlukan WebGL + CDN jsDelivr — diagram 2D di bawah tetap tersedia bila gagal.</p>
+<div id="bv-root" class="bv-root" data-viewer-state="loading" data-selected-component="cam" data-explode="0">
+  <p id="bv-boot-status" class="bv-status" role="status">Memuat viewer 3D…</p>
+</div>
+<p class="note">Model <strong>ilustratif</strong>: proporsi dari foto/pengamatan, bukan CAD — tanpa klaim
+dimensi. Kabel = koneksi logis (bukan trace PCB). Geometri prosedural via
+<a href="https://cdn.jsdelivr.net/npm/three@0.180.0/">three.js 0.180.0 (CDN)</a>; viewer offline
+gagal memuat → gunakan diagram 2D.</p>
+</div>
+
+<details class="diagram2d"><summary>Diagram 2D dan referensi pin</summary>
+
+<h2>Pohon Daya (logis)</h2>
+<div class="card">
+<p class="scroll-hint">Geser diagram untuk melihat seluruhnya &rarr;</p>
+<div class="diagram-scroll" tabindex="0" role="region" aria-label="Diagram pohon daya logis — geser horizontal pada layar kecil">
+<svg viewBox="0 0 900 330" width="900" role="img" aria-labelledby="pt-title pt-desc">
+  <title id="pt-title">Pohon daya logis carrier ESP32-CAM</title>
+  <desc id="pt-desc">J_PWR 5V masuk lewat proteksi, bercabang ke header 5V modul ESP32-CAM dan cabang 5V servo — masing-masing terproteksi sendiri dari sumber yang sama (tidak terisolasi); semua GND bertemu di rail star bawah, termasuk cabang CAM.</desc>
+  <rect x="30" y="120" width="150" height="80" rx="6" fill="#fdf8ec" stroke="var(--line)" stroke-width="1.5"/>
+  <text x="105" y="152" text-anchor="middle" class="svg-title" font-size="15" fill="var(--ink)">J_PWR</text>
+  <text x="105" y="174" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ochre)">5V / GND masuk</text>
+  <path class="pwr5" d="M180 150 H230"/>
+  <path class="gnd" d="M105 200 V300"/>
+  <rect x="230" y="120" width="160" height="80" rx="6" fill="#fdf8ec" stroke="var(--line)" stroke-width="1.5"/>
+  <text x="310" y="150" text-anchor="middle" class="svg-title" font-size="14" fill="var(--ink)">PROTEKSI</text>
+  <text x="310" y="170" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">sekring / polaritas</text>
+  <text x="310" y="186" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">(part terbuka)</text>
+  <path class="gnd" d="M310 200 V300"/>
+  <path class="pwr5" d="M390 150 H430 V80 H470"/>
+  <path class="pwr5" d="M430 150 V235 H470"/>
+  <rect x="470" y="40" width="230" height="85" rx="6" fill="#fdf8ec" stroke="var(--ochre-line)" stroke-width="1.5"/>
+  <text x="585" y="66" text-anchor="middle" class="svg-title" font-size="14" fill="var(--ochre)">Cabang 5V ESP32-CAM</text>
+  <text x="585" y="85" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">proteksi sendiri → header 5V modul</text>
+  <text x="585" y="102" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">regulator 3V3 onboard modul</text>
+  <rect x="470" y="195" width="230" height="85" rx="6" fill="#fdf8ec" stroke="var(--ochre-line)" stroke-width="1.5"/>
+  <text x="585" y="221" text-anchor="middle" class="svg-title" font-size="14" fill="var(--ochre)">Cabang 5V SERVO</text>
+  <text x="585" y="240" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">proteksi sendiri → J_SERVO_*</text>
+  <text x="585" y="257" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">bulk 470–1000µF (provisional)</text>
+  <path class="v33" d="M700 66 H745"/>
+  <text x="745" y="62" class="svg-label" font-size="11" fill="var(--violet)">3V3 logic</text>
+  <text x="745" y="76" class="svg-label" font-size="11" fill="var(--violet)">(onboard)</text>
+  <path class="gnd" d="M585 280 V300"/>
+  <path class="gnd" d="M700 105 H770 V300"/>
+  <path class="gnd" d="M105 300 H770"/>
+  <circle cx="180" cy="150" r="4" fill="var(--ochre-line)"/>
+  <circle cx="470" cy="80" r="4" fill="var(--ochre-line)"/>
+  <circle cx="470" cy="235" r="4" fill="var(--ochre-line)"/>
+  <circle cx="105" cy="300" r="5" fill="var(--card)" stroke="var(--gnd)" stroke-width="2"/>
+  <circle cx="310" cy="300" r="5" fill="var(--card)" stroke="var(--gnd)" stroke-width="2"/>
+  <circle cx="585" cy="300" r="5" fill="var(--card)" stroke="var(--gnd)" stroke-width="2"/>
+  <circle cx="770" cy="300" r="5" fill="var(--card)" stroke="var(--gnd)" stroke-width="2"/>
+  <text x="437" y="318" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">STAR GND — semua cabang bertemu satu titik logis dekat J_PWR</text>
+  <text x="418" y="132" class="svg-label" font-size="11" fill="var(--ochre)">sumber sama, TIDAK terisolasi</text>
+</svg>
+</div>
+<p class="note"><strong>Belum diukur:</strong> I_total ≈ I_MCU + I_kamera_onboard + I_SD_peak +
+I_pan_stall + I_tilt_stall (bila terpasang) + margin — dua servo boleh beda arus stall.
+Backfeed USB programmer ↔ 5V eksternal wajib diverifikasi: satu sumber atau metode data-only.</p>
+</div>
+
+<h2>Footprint Carrier (top-down, logis)</h2>
+<div class="card">
+<p class="scroll-hint">Geser diagram untuk melihat seluruhnya &rarr;</p>
+<div class="diagram-scroll" tabindex="0" role="region" aria-label="Diagram footprint logis carrier — geser horizontal pada layar kecil">
+<svg viewBox="0 0 900 650" width="900" role="img" aria-labelledby="fp-title fp-desc">
+  <title id="fp-title">Footprint logis carrier ESP32-CAM</title>
+  <desc id="fp-desc">Modul ESP32-CAM di tengah carrier; kamera FFC dan slot microSD onboard pre-wired di atasnya; antena sebagai panduan keep-out logis; konektor tepi J_PWR, J_SERVO_PAN, J_SERVO_TILT conditional, J_PROG programmer, J_EXT opsional; J_EVENT software tanpa kabel; rail 5V servo dan rail GND tersambung penuh.</desc>
+  <rect x="20" y="20" width="860" height="610" rx="10" fill="#fbf6ea" stroke="var(--line)" stroke-width="2"/>
+  <text x="36" y="44" class="svg-label" font-size="11" fill="var(--line)">CARRIER — breakout logis, bukan PCB RF</text>
+  <rect x="350" y="70" width="150" height="55" rx="5" fill="#f0ece2" stroke="var(--gnd)" stroke-width="1.5"/>
+  <text x="425" y="92" text-anchor="middle" class="svg-title" font-size="12" fill="var(--ink)">OV2640 (FFC)</text>
+  <text x="425" y="110" text-anchor="middle" class="svg-label" font-size="11" fill="var(--gnd)">onboard pre-wired</text>
+  <path class="onboard" d="M355 125 V140 H340 V180"/>
+  <rect x="600" y="85" width="180" height="55" rx="5" fill="#f0ece2" stroke="var(--gnd)" stroke-width="1.5"/>
+  <text x="690" y="107" text-anchor="middle" class="svg-title" font-size="12" fill="var(--ink)">microSD onboard</text>
+  <text x="690" y="125" text-anchor="middle" class="svg-label" font-size="11" fill="var(--gnd)">SDMMC slot1 width1 · pre-wired</text>
+  <path class="onboard" d="M690 140 V200 H590"/>
+  <rect x="350" y="150" width="220" height="30" fill="rgba(194,80,60,.10)" stroke="var(--coral)" stroke-width="1.5" stroke-dasharray="5 3"/>
+  <text x="460" y="169" text-anchor="middle" class="svg-label" font-size="11" fill="var(--coral)">ANTENA — keep-out (panduan logis)</text>
+  <rect x="330" y="180" width="260" height="230" rx="8" fill="#fffdf7" stroke="var(--teal)" stroke-width="2"/>
+  <text x="460" y="208" text-anchor="middle" class="svg-title" font-size="14" fill="var(--teal)">ESP32-CAM (modul)</text>
+  <text x="460" y="226" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">AI-Thinker · revisi belum diverifikasi</text>
+  <text x="460" y="248" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">Flash LED GPIO4 · Status GPIO33?</text>
+  <text x="460" y="268" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">UART GPIO1/3 ↔ programmer</text>
+  <text x="460" y="288" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">GPIO13 = SIG pan + SD DAT3</text>
+  <text x="460" y="308" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">GPIO12 = SIG tilt (conditional)</text>
+  <text x="460" y="352" text-anchor="middle" class="svg-label" font-size="11" fill="var(--violet)">rail 3V3 dari regulator onboard</text>
+  <rect x="50" y="210" width="190" height="70" rx="6" fill="#fdf8ec" stroke="var(--ochre-line)" stroke-width="2"/>
+  <text x="145" y="236" text-anchor="middle" class="svg-title" font-size="13" fill="var(--ochre)">J_PWR</text>
+  <text x="145" y="254" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">5V / GND + proteksi</text>
+  <path class="pwr5" d="M240 230 H275 V200"/>
+  <path class="gnd" d="M240 265 H285 V610"/>
+  <path class="pwr5" d="M275 200 H330"/>
+  <path class="pwr5" d="M275 200 V445 H635"/>
+  <circle cx="275" cy="200" r="5" fill="var(--ochre-line)"/>
+  <circle cx="330" cy="200" r="4" fill="var(--ochre-line)"/>
+  <path class="pwr5" d="M635 445 V420"/>
+  <path class="pwr5" d="M635 400 V278"/>
+  <path class="pwr5" d="M635 255 V200"/>
+  <path class="pwr5" d="M635 240 H660"/>
+  <path class="pwr5" d="M635 385 H660"/>
+  <circle cx="660" cy="240" r="4" fill="var(--ochre-line)"/>
+  <circle cx="660" cy="385" r="4" fill="var(--ochre-line)"/>
+  <rect x="660" y="225" width="200" height="80" rx="6" fill="#fdf8ec" stroke="var(--teal)" stroke-width="2"/>
+  <text x="760" y="249" text-anchor="middle" class="svg-title" font-size="13" fill="var(--teal)">J_SERVO_PAN</text>
+  <text x="760" y="267" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">GND / SERVO5V / SIG=13</text>
+  <text x="760" y="285" text-anchor="middle" class="svg-label" font-size="11" fill="var(--coral)">conditional koordinasi SD</text>
+  <path class="sig" d="M590 270 H610 V265 H660"/>
+  <text x="614" y="258" class="svg-label" font-size="11" fill="var(--teal)">SIG 13</text>
+  <rect x="660" y="370" width="200" height="80" rx="6" fill="#fdf8ec" stroke="var(--teal)" stroke-width="2" class="cond"/>
+  <text x="760" y="394" text-anchor="middle" class="svg-title" font-size="13" fill="var(--teal)">J_SERVO_TILT</text>
+  <text x="760" y="412" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">GND / SERVO5V / SIG=12</text>
+  <text x="760" y="430" text-anchor="middle" class="svg-label" font-size="11" fill="var(--coral)">conditional — strap VDD_SDIO</text>
+  <path class="sig cond" d="M590 350 H620 V410 H660"/>
+  <text x="596" y="342" class="svg-label" font-size="11" fill="var(--teal)">SIG 12</text>
+  <path class="gnd" d="M860 285 H870 V610"/>
+  <path class="gnd" d="M860 430 H870"/>
+  <path class="gnd" d="M450 410 V432 H300 V610"/>
+  <path class="gnd" d="M285 610 H870"/>
+  <circle cx="285" cy="610" r="5" fill="var(--card)" stroke="var(--gnd)" stroke-width="2"/>
+  <circle cx="300" cy="610" r="5" fill="var(--card)" stroke="var(--gnd)" stroke-width="2"/>
+  <circle cx="870" cy="610" r="5" fill="var(--card)" stroke="var(--gnd)" stroke-width="2"/>
+  <text x="575" y="628" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">rail GND bersama (star logis)</text>
+  <path class="sig" d="M460 410 V500"/>
+  <text x="468" y="458" class="svg-label" font-size="11" fill="var(--teal)">UART 1/3</text>
+  <rect x="315" y="500" width="295" height="75" rx="6" fill="#fdf8ec" stroke="var(--line)" stroke-width="1.5"/>
+  <text x="462" y="522" text-anchor="middle" class="svg-title" font-size="13" fill="var(--ink)">J_PROG — programmer CAM-MB</text>
+  <text x="462" y="540" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">UART GPIO1/3 · IO0/reset · USB (maintenance)</text>
+  <text x="462" y="558" text-anchor="middle" class="svg-label" font-size="11" fill="var(--coral)">USB power: isolasi belum diverifikasi — tanpa jalur daya</text>
+  <rect x="40" y="340" width="230" height="80" rx="6" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="155" y="362" text-anchor="middle" class="svg-title" font-size="12" fill="var(--ink)">J_EVENT — software only</text>
+  <text x="155" y="380" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">WEB_BUTTON_PRESSED</text>
+  <text x="155" y="396" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">SCHEDULE_TICK · DEVICE_READY</text>
+  <text x="155" y="412" text-anchor="middle" class="svg-label" font-size="11" fill="var(--coral)">tanpa kabel GPIO</text>
+  <rect x="35" y="465" width="240" height="90" rx="6" fill="none" stroke="var(--line)" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="155" y="487" text-anchor="middle" class="svg-title" font-size="12" fill="var(--ink)">J_EXT — PCA9685 (opsional)</text>
+  <text x="155" y="505" text-anchor="middle" class="svg-label" font-size="11" fill="var(--ink)">SDA=3 / SCL=1 · 3V3 / V+5V / GND</text>
+  <text x="155" y="521" text-anchor="middle" class="svg-label" font-size="11" fill="var(--coral)">hanya bila programmer diisolasi</text>
+  <text x="155" y="537" text-anchor="middle" class="svg-label" font-size="11" fill="var(--coral)">tidak terhubung by default</text>
+  <text x="36" y="600" class="svg-label" font-size="11" fill="var(--line)">Test point: 5V_IN · 5V_CAM · 5V_SERVO · GND · 3V3 · GPIO13 · GPIO12 · GPIO14 · GPIO15 · GPIO2</text>
+</svg>
+</div>
+<p class="note">Semua garis = koneksi <strong>logis</strong> (bukan trace PCB, bukan urutan pin fisik
+vendor). Pita antena = panduan keep-out logis dari dokumentasi modul — tanpa klaim dimensi.
+Garis tipis abu-abu = koneksi onboard pabrik (FFC kamera, slot SD) — tidak di-rewire.</p>
+</div>
+
+</details>
+
+<div class="cols">
+<div class="card">
+<h3>Kamera onboard (koneksi pabrik, referensi)</h3>
+<table>
+<tr><th>Sinyal</th><th>GPIO</th></tr>
+<tr><td class="sig-t">PWDN</td><td class="gp">32</td></tr>
+<tr><td class="sig-t">RESET</td><td class="gp">-1 (tidak ada)</td></tr>
+<tr><td class="sig-t">XCLK</td><td class="gp">0</td></tr>
+<tr><td class="sig-t">SCCB_SDA / SCL</td><td class="gp">26 / 27</td></tr>
+<tr><td class="sig-t">D0–D3</td><td class="gp">5, 18, 19, 21</td></tr>
+<tr><td class="sig-t">D4–D7</td><td class="gp">36, 39, 34, 35</td></tr>
+<tr><td class="sig-t">VSYNC / HREF / PCLK</td><td class="gp">25 / 23 / 22</td></tr>
+</table>
+<p class="note">Dari contoh Espressif lokal (AI_THINKER) — bukan verifikasi unit. PWDN dikendalikan driver via GPIO32; reset tanpa GPIO khusus.</p>
+</div>
+<div class="card">
+<h3>microSD onboard (SDMMC slot1, width1)</h3>
+<table>
+<tr><th>Sinyal</th><th>GPIO</th></tr>
+<tr><td class="sig-t">CLK / CMD</td><td class="gp">14 / 15</td></tr>
+<tr><td class="sig-t">DAT0</td><td class="gp">2</td></tr>
+<tr><td class="sig-t">DAT1 / DAT2</td><td class="gp">4 / 12 (terhubung, tak dipakai)</td></tr>
+<tr><td class="sig-t">DAT3</td><td class="gp">13 — wajib HIGH saat init</td></tr>
+</table>
+<p class="note">Lebar 1-bit eksplisit; DAT3 berbagi dengan SIG servo pan → koordinasi firmware.</p>
+</div>
+</div>
+
+<div class="card">
+<h3>Konektor eksternal carrier</h3>
+<table>
+<tr><th>Konektor</th><th>Isi logis</th><th>Status</th></tr>
+<tr><td class="sig-t">J_PWR</td><td>5V_IN, GND + proteksi</td><td>baseline</td></tr>
+<tr><td class="sig-t">Header modul</td><td>5V_CAM, GND (silkscreen "5V" wajib diverifikasi)</td><td>baseline</td></tr>
+<tr><td class="sig-t">J_SERVO_PAN</td><td>GND / SERVO5V / SIG=GPIO13</td><td>conditional koordinasi SD</td></tr>
+<tr><td class="sig-t">J_SERVO_TILT</td><td>GND / SERVO5V / SIG=GPIO12</td><td>conditional — strap VDD_SDIO</td></tr>
+<tr><td class="sig-t">J_EVENT</td><td>pemicu software (web/scheduler)</td><td>tanpa kabel</td></tr>
+<tr><td class="sig-t">J_PROG</td><td>UART 1/3, IO0, USB — base CAM-MB</td><td>maintenance</td></tr>
+<tr><td class="sig-t">J_EXT</td><td>PCA9685 SDA=3/SCL=1, 3V3, V+5V, GND</td><td>opsional — programmer diisolasi</td></tr>
+</table>
+</div>
+
+<h2>Checklist Referensi</h2>
+<div class="card">
+<ul>
+  <li>Peta pin kamera/SD: contoh Espressif <strong>lokal</strong> (sudah dibaca) — daftar URL resmi + provenance di <a href="05-hardware-pins.md">05-hardware-pins.md</a>.</li>
+  <li>Revisi/clone board, kapasitas flash/PSRAM, pull-up DAT3 terpasang: <strong>belum diverifikasi</strong> di unit.</li>
+  <li>Bench (stall servo, backfeed USB, power-order GPIO12): <strong>BELUM DIJALANKAN</strong>.</li>
+</ul>
+<p class="note">Partner · dokumen perencanaan · seluruh konten berstatus DRAFT UNTUK REVIEW.</p>
+</div>
+
+</div>
+<script type="module">
+  const root = document.getElementById('bv-root');
+  const boot = document.getElementById('bv-boot-status');
+  const det2d = document.querySelector('details.diagram2d');
+  const open2d = () => det2d?.setAttribute('open', '');
+  const showFail = (msg) => {
+    root.dataset.viewerState = 'error';
+    if (boot) {
+      boot.textContent = 'Viewer 3D gagal dimuat: ' + msg + ' — diagram 2D dibuka di bawah. ';
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'bv-btn'; b.textContent = 'Muat ulang';
+      b.addEventListener('click', () => location.reload());
+      boot.appendChild(b);
+    }
+    open2d();
+  };
+  let done = false;
+  // Hard 20s deadline: a hung CDN fetch falls back to the 2D diagrams. The
+  // dynamic import itself cannot be aborted — a late fulfillment is ignored
+  // once we are in the error state (retry = reload, served from cache).
+  const deadline = setTimeout(() => {
+    if (!done) { done = true; showFail('Batas waktu 20 detik terlampaui — CDN jsDelivr tidak merespons'); }
+  }, 20000);
+  import('./board-viewer.js')
+    .then((m) => {
+      if (done) return; // deadline or an earlier failure already settled this
+      done = true; clearTimeout(deadline);
+      try { root.__viewer = m.initBoardViewer(root); boot?.remove(); }
+      catch (e) { showFail(e && e.message ? e.message : String(e)); }
+    })
+    .catch((e) => { if (done) return; done = true; clearTimeout(deadline); showFail(e && e.message ? e.message : String(e)); });
+  // Print: closed <details> hides ::details-content in Chromium — open it for
+  // the print run and restore afterwards.
+  let detWasOpen;
+  window.addEventListener('beforeprint', () => { detWasOpen = det2d?.open; det2d?.setAttribute('open', ''); });
+  window.addEventListener('afterprint', () => { if (detWasOpen === false) det2d?.removeAttribute('open'); });
+</script>
+</body>
+</html>

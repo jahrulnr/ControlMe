@@ -1,0 +1,5 @@
+{
+  "type": "module",
+  "private": true,
+  "description": "ESM marker for docs viewer modules + node:test unit tests. No npm dependencies — three.js loads via CDN importmap in the browser only."
+}
