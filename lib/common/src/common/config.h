@@ -30,6 +30,7 @@ inline constexpr uint32_t kStackServo = 4 * 1024;
 inline constexpr uint32_t kStackSupervisor = 4 * 1024;
 inline constexpr uint32_t kStackMcpWorker = 6 * 1024;
 inline constexpr uint32_t kStackMcpd = 4 * 1024;
+inline constexpr uint32_t kStackMcpKeepalive = 4 * 1024;  // keepalive+reap only
 inline constexpr uint32_t kStackFileLog = 4 * 1024;
 
 // Dual-core scheduling — the single source of truth for our task
@@ -59,13 +60,11 @@ inline constexpr uint32_t kStackFileLog = 4 * 1024;
 //          loopTask(1 — we remove it in loop()), IDLE1(0)
 //   no-affinity: Tmr Svc(1, FreeRTOS daemon)
 //
-// Documented exception: the "socket-pumping tasks live on core0" claim is
-// not absolute — a device-plane owner MAY execute a caller's sink I/O in
-// its own context (camera Read writes httpd_resp_send_chunk, and agent
-// vision uploads via B64Sink, from the prio8 core1 camera task). All those
-// paths are deadline-bounded (send_wait_timeout 5s/chunk, facade 30s) →
-// worst case an honest Err::Timeout, not a hang. Core0 callers waiting on
-// `done` are also deadline-bounded — no unbounded cross-plane wait.
+// No device-plane owner executes caller I/O: streaming ops copy one
+// bounded chunk into the request payload (Storage/Camera Read) and the
+// facade's sink.write runs in the CALLER task — a slow socket can never
+// occupy an owner queue. All cross-plane waits stay deadline-bounded —
+// worst case an honest Err::Timeout, not a hang.
 // Plain types (int/unsigned) — this header is also compiled by host tests
 // without FreeRTOS; implicit conversion to BaseType_t/UBaseType_t is safe
 // at call sites.

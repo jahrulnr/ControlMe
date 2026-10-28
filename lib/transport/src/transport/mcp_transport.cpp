@@ -37,8 +37,10 @@ static void stackHwmNote(uint32_t& min, const char* name) {
 }
 static uint32_t s_hwmMcpd = UINT32_MAX;
 static uint32_t s_hwmMcpw = UINT32_MAX;
+static uint32_t s_hwmMcpka = UINT32_MAX;
 static inline void noteMcpd() { stackHwmNote(s_hwmMcpd, "mcpd"); }
 static inline void noteMcpw() { stackHwmNote(s_hwmMcpw, "mcpw"); }
+static inline void noteMcpka() { stackHwmNote(s_hwmMcpka, "mcpka"); }
 
 // ---------------------------------------------------------------- util
 
@@ -121,13 +123,16 @@ Status McpTransport::begin(uint16_t port, controlme::mcp::McpServer& server) {
   server_ = &server;
   respBuf_ = static_cast<char*>(controlme::psramMalloc(cfg::kMcpRespCap));
   mutex_ = xSemaphoreCreateMutex();
+  sendMux_ = xSemaphoreCreateMutex();
   jobQ_ = xQueueCreate(cfg::kMcpJobQueue, sizeof(Job));
-  if (!respBuf_ || !mutex_ || !jobQ_) {
+  if (!respBuf_ || !mutex_ || !sendMux_ || !jobQ_) {
     if (mutex_) vSemaphoreDelete(mutex_);
+    if (sendMux_) vSemaphoreDelete(sendMux_);
     if (jobQ_) vQueueDelete(jobQ_);
     controlme::psramFree(respBuf_);
     respBuf_ = nullptr;
     mutex_ = nullptr;
+    sendMux_ = nullptr;
     jobQ_ = nullptr;
     return Status::Fail(Err::Internal, "mcp alloc");
   }
@@ -167,9 +172,11 @@ Status McpTransport::begin(uint16_t port, controlme::mcp::McpServer& server) {
                                                         MALLOC_CAP_8BIT));
     hd_ = nullptr;
     vSemaphoreDelete(mutex_);
+    vSemaphoreDelete(sendMux_);
     vQueueDelete(jobQ_);
     controlme::psramFree(respBuf_);
     mutex_ = nullptr;
+    sendMux_ = nullptr;
     jobQ_ = nullptr;
     respBuf_ = nullptr;
     return Status::Fail(Err::Internal, "mcp httpd start");
@@ -200,17 +207,31 @@ Status McpTransport::begin(uint16_t port, controlme::mcp::McpServer& server) {
                               cfg::kCoreNet) != pdPASS) {
     goto fail_started;
   }
+  // Keepalive/reap on their own task — a long tool call in the worker must
+  // not starve SSE liveness or hold dead session slots.
+  if (xTaskCreatePinnedToCore(&kaEntry, "mcpka", cfg::kStackMcpKeepalive,
+                              this, cfg::kPrioMcpWorker, &kaTask_,
+                              cfg::kCoreNet) != pdPASS) {
+    goto fail_started;
+  }
   ESP_LOGI(kTag, "mcp :%u up (streamable /mcp + legacy /sse,/messages)",
            (unsigned)port);
   return Status::Ok();
 
 fail_started:
+  // vTaskDelete(nullptr) deletes the CALLER — guard. Tasks die before the
+  // queue/mutexes they may be blocked on; mutex_ must outlive httpd_stop
+  // (closeHook fires inside it).
+  if (kaTask_) { vTaskDelete(kaTask_); kaTask_ = nullptr; }
+  if (worker_) { vTaskDelete(worker_); worker_ = nullptr; }
   httpd_stop(hd_);
   hd_ = nullptr;
   vSemaphoreDelete(mutex_);
+  vSemaphoreDelete(sendMux_);
   vQueueDelete(jobQ_);
   controlme::psramFree(respBuf_);
   mutex_ = nullptr;
+  sendMux_ = nullptr;
   jobQ_ = nullptr;
   respBuf_ = nullptr;
   return Status::Fail(Err::Internal, "mcp route/worker");
@@ -428,21 +449,22 @@ void McpTransport::reapDead() {
       s.state = SlotState::Free;
     }
     xSemaphoreGive(mutex_);
-    if (st == SlotState::DeadByPeer) {
-      if (async) {
-        httpd_req_async_handler_complete(async);
-        releaseAsync();
-      }
-    } else if (st == SlotState::DeadByUs) {
+    if (st != SlotState::DeadByPeer && st != SlotState::DeadByUs) continue;
+    // sendMux_: a sender may be mid-send on this async — completing it
+    // must wait for that send (senders re-check state inside the hold, so
+    // a slot already Free is skipped and the complete can't interleave).
+    xSemaphoreTake(sendMux_, portMAX_DELAY);
+    if (st == SlotState::DeadByUs) {
       // shutdown first: httpd sees EOF then closes via close_fn — an fd
       // reused by a new connection isn't killed along (trigger_close
       // per-fd-number can't tell them apart).
       if (fd >= 0) shutdown(fd, SHUT_RDWR);
-      if (async) {
-        httpd_req_async_handler_complete(async);
-        releaseAsync();
-      }
     }
+    if (async) {
+      httpd_req_async_handler_complete(async);
+      releaseAsync();
+    }
+    xSemaphoreGive(sendMux_);
   }
 }
 
@@ -468,6 +490,11 @@ void McpTransport::processJob(const Job& j) {
   // Sse: response -> "event: message" to a session still Live (sid must
   // match — the slot may already be reused by a new session).
   if (!responded) return;
+  // sendMux_: the 3-chunk frame stays atomic vs a ": ka" chunk from mcpka,
+  // and reapDead can't complete the async req mid-send. The Live check is
+  // re-done INSIDE the hold (mutex_ nested only) — checking first and
+  // sending later would leave the complete-mid-send window open.
+  xSemaphoreTake(sendMux_, portMAX_DELAY);
   xSemaphoreTake(mutex_, portMAX_DELAY);
   Session* s = nullptr;
   for (auto& c : sessions_) {
@@ -475,31 +502,44 @@ void McpTransport::processJob(const Job& j) {
   }
   httpd_req_t* async = s ? s->async : nullptr;
   xSemaphoreGive(mutex_);
-  if (!s || !async) return;
-  static const char kMsgHead[] = "event: message\ndata: ";
-  if (httpd_resp_send_chunk(async, kMsgHead, sizeof(kMsgHead) - 1) != ESP_OK ||
-      httpd_resp_send_chunk(async, out.data(), (ssize_t)out.len()) != ESP_OK ||
-      httpd_resp_send_chunk(async, "\n\n", 2) != ESP_OK) {
-    xSemaphoreTake(mutex_, portMAX_DELAY);
-    if (s->state == SlotState::Live) s->state = SlotState::DeadByUs;
-    xSemaphoreGive(mutex_);
+  if (s && async) {
+    static const char kMsgHead[] = "event: message\ndata: ";
+    if (httpd_resp_send_chunk(async, kMsgHead, sizeof(kMsgHead) - 1) != ESP_OK ||
+        httpd_resp_send_chunk(async, out.data(), (ssize_t)out.len()) != ESP_OK ||
+        httpd_resp_send_chunk(async, "\n\n", 2) != ESP_OK) {
+      xSemaphoreTake(mutex_, portMAX_DELAY);
+      // The slot may have been reaped+reused while we sent — only mark
+      // dead when it still carries the async req we failed on.
+      if (s->state == SlotState::Live && s->async == async) {
+        s->state = SlotState::DeadByUs;
+      }
+      xSemaphoreGive(mutex_);
+    }
   }
+  xSemaphoreGive(sendMux_);
 }
 
 void McpTransport::keepaliveTick(uint32_t nowMs) {
   if (nowMs - lastKaMs_ < cfg::kMcpKeepaliveMs) return;
   lastKaMs_ = nowMs;
   for (auto& s : sessions_) {
+    // sendMux_ (outer) + mutex_ (inner): state re-check and send stay
+    // atomic vs reapDead's complete; never sent on a completed async req.
+    xSemaphoreTake(sendMux_, portMAX_DELAY);
     xSemaphoreTake(mutex_, portMAX_DELAY);
     const bool live = s.state == SlotState::Live;
     httpd_req_t* async = s.async;
     xSemaphoreGive(mutex_);
-    if (!live || !async) continue;
-    if (httpd_resp_send_chunk(async, ": ka\n\n", sizeof(": ka\n\n") - 1) != ESP_OK) {
+    if (live && async &&
+        httpd_resp_send_chunk(async, ": ka\n\n", sizeof(": ka\n\n") - 1) !=
+            ESP_OK) {
       xSemaphoreTake(mutex_, portMAX_DELAY);
-      if (s.state == SlotState::Live) s.state = SlotState::DeadByUs;
+      if (s.state == SlotState::Live && s.async == async) {
+        s.state = SlotState::DeadByUs;
+      }
       xSemaphoreGive(mutex_);
     }
+    xSemaphoreGive(sendMux_);
   }
 }
 
@@ -507,14 +547,25 @@ void McpTransport::workerEntry(void* arg) {
   static_cast<McpTransport*>(arg)->workerLoop();
 }
 
+void McpTransport::kaEntry(void* arg) {
+  static_cast<McpTransport*>(arg)->kaLoop();
+}
+
 void McpTransport::workerLoop() {
   for (;;) {
     Job j{};
-    if (xQueueReceive(jobQ_, &j, pdMS_TO_TICKS(250)) == pdTRUE) {
-      processJob(j);
-    }
+    if (xQueueReceive(jobQ_, &j, portMAX_DELAY) == pdTRUE) processJob(j);
+  }
+}
+
+// Dedicated keepalive/reaper — keepalives and dead-slot reaping must keep
+// running while the worker sits inside a long synchronous tool dispatch.
+void McpTransport::kaLoop() {
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(250));
     reapDead();
     keepaliveTick((uint32_t)(esp_timer_get_time() / 1000ULL));
+    noteMcpka();
   }
 }
 

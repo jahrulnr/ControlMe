@@ -16,9 +16,9 @@
 //    re-stat after a fresh boot (consistent with bootId reconciliation
 //    docs/07).
 //  * expectedRevision: 0 = "do not check" — only valid for create mode.
-//    replace REQUIRES matching expectedRevision -> else RevisionConflict;
-//    create with expected!=0 is checked against the current revision (missing
-//    path = rev 0).
+//    create REQUIRES a missing target (existing path -> InvalidArgument;
+//    expected!=0 vs missing rev 0 -> RevisionConflict); replace REQUIRES
+//    matching expectedRevision -> else RevisionConflict.
 //  * Write transactions (docs/03 sd_write): unique staging per transaction
 //    "/sdcard/.tmp-<counter>-<rand>"; ONE write lease per path -> other
 //    writers get ResourceBusy; read/rename/remove on a leased path ->
@@ -46,6 +46,13 @@
 //  * File offset bounded by LONG_MAX via 32-bit POSIX fseek (~2 GiB) ->
 //    beyond that InvalidArgument. Recursive remove bounded by kRemoveMaxDepth
 //    -> Internal when deeper.
+//  * Case sensitivity: rev-table and lease keys are case-SENSITIVE API
+//    strings over a case-INSENSITIVE FAT — "/a.txt" and "/A.TXT" are the
+//    same file but different keys (lease protection bypassable by
+//    respelling; one file can hold two rev entries -> spurious conflict).
+//    Accepted limit — canonical casing is the caller's job. The FS ops
+//    themselves stay correct: f_rename detects same-entry renames
+//    (opRename), staging/target names can never alias (opWriteCommit).
 //  * isMounted(): volatile byte written only by the owner task — atomic
 //    1-byte read from other tasks; reflects the last mount/unmount, silently
 //    removed media is reported by the next op via errno mapping.

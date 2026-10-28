@@ -32,7 +32,9 @@ class ICamera {
   // imageId: without this, each snapshot holds a slot ~60 s so a ~1 fps
   // stream drains the 2-slot pool -> permanent RESOURCE_BUSY.
   virtual Status discard(const char* imageId) = 0;
-  // Stream image bytes to the sink (4 KiB chunks); unknown mime -> NotSupported.
+  // Stream image bytes to the sink (4 KiB chunks; sink.write runs in the
+  // caller's task — a slow client never occupies the camera owner);
+  // unknown mime -> NotSupported.
   virtual Status readImage(const char* imageId, IByteSink& sink, ImageMeta& metaOut) = 0;
   virtual Status stat(const char* imageId, ImageMeta& metaOut) = 0;
 };

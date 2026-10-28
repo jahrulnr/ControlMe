@@ -473,8 +473,13 @@ void StorageOwner::opWriteBegin(State& s, StorageReq& r) {
           Status::Fail(Err::RevisionConflict, "expectedRevision mismatch");
       return;
     }
-  } else if (r.expectedRevision != 0 && cur != r.expectedRevision) {
-    // create with expected!=0 -> still checked (missing path = rev 0).
+  } else if (exists) {
+    // create = new file only: an existing target is never overwritten
+    // without mode=replace + matching expectedRevision.
+    r.ctrl.status = Status::Fail(Err::InvalidArgument, "path already exists");
+    return;
+  } else if (r.expectedRevision != 0) {
+    // Missing path = rev 0 -> any expected!=0 is stale.
     r.currentRevision = cur;
     r.ctrl.status =
         Status::Fail(Err::RevisionConflict, "expectedRevision mismatch");
@@ -530,9 +535,21 @@ void StorageOwner::opWriteChunk(State& s, StorageReq& r) {
   }
   if (r.offset == l->nextOffset) {
     if (r.dataLen > 0) {
-      size_t w = fwrite(r.data, 1, r.dataLen, l->f);
+      // A short write advances the file position while nextOffset stays —
+      // a retried chunk would then duplicate bytes (corrupt staging).
+      // Complete the write here; on a persistent failure abort the whole
+      // transaction so no retry can ever land on top of a partial chunk.
+      size_t w = 0;
+      errno = 0;   // a short positive fwrite isn't required to set errno
+      while (w < r.dataLen) {
+        size_t n = fwrite(r.data + w, 1, r.dataLen - w, l->f);
+        if (n == 0) break;
+        w += n;
+      }
       if (w != r.dataLen) {
-        r.ctrl.status = fsErr(errno ? errno : EIO, "staging write failed");
+        const int werr = errno ? errno : EIO;
+        abortLease(s, *l, "staging write failed");   // clobbers errno
+        r.ctrl.status = fsErr(werr, "staging write failed");
         return;
       }
       l->lastCrc = esp_rom_crc32_le(0, r.data, r.dataLen);
@@ -600,7 +617,9 @@ void StorageOwner::opWriteCommit(State& s, StorageReq& r) {
   }
   char fsTarget[kFsPathCap];
   toFsPath(apiPath, fsTarget, sizeof(fsTarget));
-  // FAT rename does not replace -> remove old target first.
+  // FAT rename does not replace -> remove old target first. Safe here
+  // without the EEXIST dance of opRename: the staging name
+  // "/sdcard/.tmp-<cnt>-<rand>" can never alias the target.
   struct stat stt;
   if (::stat(fsTarget, &stt) == 0 && ::remove(fsTarget) != 0) {
     closeKeepStaging(*l, "old target removal failed");
@@ -665,7 +684,9 @@ void StorageOwner::opRename(State& s, StorageReq& r) {
         Status::Fail(Err::FileBusy, "path has active upload lease");
     return;
   }
-  // src == dst: without this guard, "remove dst then rename" deletes the file.
+  // src == dst (same spelling): no-op success — f_rename would also let it
+  // through, but treating it as a mutation would bump the revision for
+  // nothing.
   if (strcmp(fsSrc, fsDst) == 0) {
     struct stat stSelf;
     if (::stat(fsSrc, &stSelf) != 0) {
@@ -688,19 +709,34 @@ void StorageOwner::opRename(State& s, StorageReq& r) {
         Status::Fail(Err::RevisionConflict, "expectedRevision mismatch");
     return;
   }
-  // POSIX rename replaces; FAT does not -> remove dst first (dir: only when
-  // empty — non-empty contents -> honest error).
-  struct stat sd2;
-  if (::stat(fsDst, &sd2) == 0) {
+  // POSIX rename replaces; FAT does not. f_rename itself detects src==dst
+  // resolving to the SAME directory entry (incl. case-only renames on
+  // case-insensitive FAT — st_ino is 0 on this VFS, so identity cannot come
+  // from stat) and lets it through; EEXIST is only returned for a genuinely
+  // different object. Remove dst and retry only in that case — removing dst
+  // first would delete the very file being renamed on a case-only rename.
+  if (::rename(fsSrc, fsDst) != 0) {
+    const int renErr = errno;
+    if (renErr != EEXIST) {
+      r.ctrl.status = fsErr(renErr, "rename failed");
+      return;
+    }
+    struct stat sd2;
+    if (::stat(fsDst, &sd2) != 0) {
+      r.ctrl.status = fsErr(errno, "dst stat failed");
+      return;
+    }
+    // dst exists and is a different object -> POSIX-replace it (dir: only
+    // when empty — non-empty contents -> honest error).
     int rc = S_ISDIR(sd2.st_mode) ? ::rmdir(fsDst) : ::remove(fsDst);
     if (rc != 0) {
       r.ctrl.status = fsErr(errno, "dst exists and cannot be replaced");
       return;
     }
-  }
-  if (::rename(fsSrc, fsDst) != 0) {
-    r.ctrl.status = fsErr(errno, "rename failed");
-    return;
+    if (::rename(fsSrc, fsDst) != 0) {
+      r.ctrl.status = fsErr(errno, "rename failed");
+      return;
+    }
   }
   revMove(s, r.path, r.path2);
   r.revision = revPeek(s, r.path2);

@@ -7,10 +7,13 @@
 //     the following response via "event: message" on the session stream.
 // httpd handlers (kStackMcpd stack) only read the body into a PSRAM buffer +
 // enqueue; parse/dispatch/serialize runs in the worker (core0,
-// kPrioMcpWorker) — the sole sender on the session socket. Slot lifecycle
-// follows the SseServer pattern: Reserved/Live/DeadByPeer/DeadByUs + reap;
-// the ": ka" keepalive detects peer-FIN that close_fn doesn't catch for
-// async sockets.
+// kPrioMcpWorker). Keepalive + session reaping run on a dedicated "mcpka"
+// task so a long tool call can't starve SSE liveness or hold dead slots —
+// the two senders serialize on sendMux_ (a message frame's 3 chunks stay
+// atomic vs a ": ka" chunk, and an async req can't be completed mid-send).
+// Slot lifecycle follows the SseServer pattern:
+// Reserved/Live/DeadByPeer/DeadByUs + reap; the ": ka" keepalive detects
+// peer-FIN that close_fn doesn't catch for async sockets.
 #include <stdint.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -61,7 +64,9 @@ class McpTransport {
   static esp_err_t hPostMessages(httpd_req_t* r);
   static void closeHook(httpd_handle_t hd, int sockfd);
   static void workerEntry(void* arg);
+  static void kaEntry(void* arg);
   void workerLoop();
+  void kaLoop();
   void reapDead();
   void processJob(const Job& j);
   void keepaliveTick(uint32_t nowMs);
@@ -72,8 +77,13 @@ class McpTransport {
 
   httpd_handle_t hd_ = nullptr;
   TaskHandle_t worker_ = nullptr;
+  TaskHandle_t kaTask_ = nullptr;
   QueueHandle_t jobQ_ = nullptr;
-  SemaphoreHandle_t mutex_ = nullptr;  // session registry only; not during send
+  SemaphoreHandle_t mutex_ = nullptr;    // session registry only; not during send
+  // Serializes socket ops on a session's async req: message/keepalive
+  // sends AND reap's shutdown+async_handler_complete. OUTER lock — mutex_
+  // may be taken inside it (state check), never the reverse.
+  SemaphoreHandle_t sendMux_ = nullptr;
   Session sessions_[controlme::cfg::kMcpSessions] = {};
   // Async units in use (mutex_-guarded) — max kMcpAsyncMax so there's
   // always >=1 non-async session for LRU evict.

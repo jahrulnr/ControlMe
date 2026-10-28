@@ -22,8 +22,11 @@ struct LogReadResult {
 class IDeviceLog {
  public:
   virtual ~IDeviceLog() = default;
-  // Copy up to cap bytes starting at offset into dst (executed by the
-  // log owner task; caller blocks with a deadline).
+  // Copy up to cap bytes starting at offset into dst (the file read runs
+  // in the log owner task; the caller blocks with a deadline). cap is
+  // clamped to cfg::kIoChunk. dst is written by the facade on success
+  // only — the owner never sees it, so a Timeout leaves caller memory
+  // untouched and freeable.
   virtual Status read(LogFile which, size_t offset, char* dst, size_t cap, uint32_t timeoutMs,
                       LogReadResult& out) = 0;
   virtual Status flush(uint32_t timeoutMs) = 0;

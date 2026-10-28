@@ -6,6 +6,7 @@
 #include <string.h>
 #include "common/config.h"
 #include "common/event.h"   // copyStr
+#include "common/psram_alloc.h"
 #include <esp_camera.h>
 #include <esp_flash.h>
 #include <esp_heap_caps.h>
@@ -18,13 +19,17 @@ namespace controlme {
 
 static const char* kTag = "camera";
 
-// Facade timeouts: control ops use the common tool budget; Read is longer
-// because it involves a network stream to the client (4 KiB per send).
+// Facade timeout: every op is bounded work for the owner (Read copies one
+// kIoChunk — network send pacing lives in the caller's sink.write).
 static constexpr uint32_t kCtlTimeoutMs = cfg::kToolTimeoutMs;    // 10 s
-static constexpr uint32_t kReadTimeoutMs = cfg::kIdleTimeoutMs;   // 30 s
-// Maximum wait for "owner stopped writing to the sink" after a facade
-// timeout — the httpd socket send_wait_timeout is 5 s per send.
-static constexpr uint32_t kReadAbandonWaitMs = 15 * 1000;
+
+// CameraReq ~4.2 KiB — two on a caller stack would overflow the facade
+// tasks (httpd 8 KiB, mcpw 6 KiB). All facades heap-allocate a pair
+// (PSRAM-first), same pattern as StorageOwner's StorageReqPair.
+struct CameraReqPair { CameraReq in, o; };
+static CameraReqPair* allocCameraReq() {
+  return controlme::psramNew<CameraReqPair>();
+}
 
 // ------------------------------------------------------------------ facade
 
@@ -40,103 +45,142 @@ Status CameraOwner::begin() {
 }
 
 Status CameraOwner::initHw() {
-  CameraReq in{}, out{};
-  in.op = CameraOp::Init;
-  return call(in, out, kCtlTimeoutMs);
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::Init;
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
 Status CameraOwner::tick() {
-  CameraReq in{}, out{};
-  in.op = CameraOp::Tick;
-  return call(in, out, kCtlTimeoutMs);
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::Tick;
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
 Status CameraOwner::capture(ImageMeta& out) {
-  CameraReq in{}, res{};
-  in.op = CameraOp::Capture;
-  Status st = call(in, res, kCtlTimeoutMs);
-  if (st.ok()) out = res.meta;
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::Capture;
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  if (st.ok()) out = rp->o.meta;
+  controlme::psramDelete(rp);
   return st;
 }
 
 Status CameraOwner::pin(const char* imageId) {
-  CameraReq in{}, out{};
-  in.op = CameraOp::Pin;
-  copyStr(in.imageId, sizeof(in.imageId), imageId);
-  return call(in, out, kCtlTimeoutMs);
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::Pin;
+  copyStr(rp->in.imageId, sizeof(rp->in.imageId), imageId);
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
 Status CameraOwner::release(const char* imageId) {
-  CameraReq in{}, out{};
-  in.op = CameraOp::Release;
-  copyStr(in.imageId, sizeof(in.imageId), imageId);
-  return call(in, out, kCtlTimeoutMs);
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::Release;
+  copyStr(rp->in.imageId, sizeof(rp->in.imageId), imageId);
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
 Status CameraOwner::discard(const char* imageId) {
-  CameraReq in{}, out{};
-  in.op = CameraOp::Discard;
-  copyStr(in.imageId, sizeof(in.imageId), imageId);
-  return call(in, out, kCtlTimeoutMs);
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::Discard;
+  copyStr(rp->in.imageId, sizeof(rp->in.imageId), imageId);
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
+// Per-chunk pump — same pattern as StorageOwner::read: each iteration is
+// one bounded Read request (owner memcpy only). sink.write runs in THIS
+// (caller's) task, so a slow client can never occupy the camera queue and
+// nothing caller-owned crosses the task boundary — the caller may time
+// out or die between chunks with no lifetime hazard.
 Status CameraOwner::readImage(const char* imageId, IByteSink& sink,
                               ImageMeta& metaOut) {
-  CameraReq in{}, res{};
-  in.op = CameraOp::Read;
-  copyStr(in.imageId, sizeof(in.imageId), imageId);
-  in.sink = &sink;
-  // The sink lives on this task's stack — if call() times out, the owner
-  // may still be writing to it. readDone ensures the owner has fully stopped
-  // before we return (the owner exits at a chunk boundary via the abandoned
-  // state check).
-  SemaphoreHandle_t readDone = xSemaphoreCreateBinary();
-  if (!readDone) return Status::Fail(Err::Internal, "read sem alloc");
-  in.readDone = readDone;
-  Status st = call(in, res, kReadTimeoutMs);
-  if (st.code == Err::Timeout) {
-    // Wait bound = httpd socket send timeout (5 s) + chunk margin.
-    xSemaphoreTake(readDone, pdMS_TO_TICKS(kReadAbandonWaitMs));
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  Status st = Status::Ok();
+  uint32_t off = 0;
+  bool first = true;
+  for (;;) {
+    CameraReq& in = rp->in;
+    in = CameraReq{};
+    in.op = CameraOp::Read;
+    copyStr(in.imageId, sizeof(in.imageId), imageId);
+    in.offset = off;
+    st = call(in, rp->o, kCtlTimeoutMs);
+    if (!st.ok()) break;
+    if (first) { metaOut = rp->o.meta; first = false; }
+    if (rp->o.dataLen == 0) break;  // EOF
+    st = sink.write(rp->o.data, rp->o.dataLen);
+    if (!st.ok()) break;
+    off += rp->o.dataLen;
+    if (off >= rp->o.meta.bytes) break;  // image fully sent
   }
-  vSemaphoreDelete(readDone);
-  if (st.ok()) metaOut = res.meta;
+  controlme::psramDelete(rp);
   return st;
 }
 
 Status CameraOwner::beginStream() {
-  CameraReq in{}, out{};
-  in.op = CameraOp::StreamBegin;
-  return call(in, out, kCtlTimeoutMs);
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::StreamBegin;
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
 Status CameraOwner::pullStreamFrame(const uint8_t*& data, size_t& len) {
-  CameraReq in{}, res{};
-  in.op = CameraOp::StreamPull;
-  Status st = call(in, res, kCtlTimeoutMs);
-  if (!st.ok()) return st;
-  data = res.frame;
-  len = res.frameLen;
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::StreamPull;
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  if (st.ok()) {
+    data = rp->o.frame;
+    len = rp->o.frameLen;
+  }
+  controlme::psramDelete(rp);
   return st;
 }
 
 Status CameraOwner::releaseStreamFrame() {
-  CameraReq in{}, out{};
-  in.op = CameraOp::StreamRelease;
-  return call(in, out, kCtlTimeoutMs);
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::StreamRelease;
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
 Status CameraOwner::endStream() {
-  CameraReq in{}, out{};
-  in.op = CameraOp::StreamEnd;
-  return call(in, out, kCtlTimeoutMs);
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::StreamEnd;
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
 Status CameraOwner::stat(const char* imageId, ImageMeta& metaOut) {
-  CameraReq in{}, res{};
-  in.op = CameraOp::Stat;
-  copyStr(in.imageId, sizeof(in.imageId), imageId);
-  Status st = call(in, res, kCtlTimeoutMs);
-  if (st.ok()) metaOut = res.meta;
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::Stat;
+  copyStr(rp->in.imageId, sizeof(rp->in.imageId), imageId);
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  if (st.ok()) metaOut = rp->o.meta;
+  controlme::psramDelete(rp);
   return st;
 }
 
@@ -151,8 +195,8 @@ uint32_t CameraOwner::nowMs() {
 }
 
 void CameraOwner::handle(CameraReq& r) {
-  // LAZY TTL sweep on every op (docs/03): expired = unreferenced, not
-  // pinned, not being read by a provider. Tick = sweep only.
+  // LAZY TTL sweep on every op (docs/03): expired = unreferenced & not
+  // pinned (in-progress reads refresh lastRefMs per chunk). Tick = sweep.
   sweepExpired(nowMs());
   switch (r.op) {
     case CameraOp::Init:    handleInit(r);    break;
@@ -286,7 +330,6 @@ void CameraOwner::handleCapture(CameraReq& r) {
   s->meta.height = h;
   s->meta.pinned = false;
   s->refCount = 0;
-  s->providerReading = false;
   s->occupied = true;
   s->lastRefMs = nowMs();  // newly created without refs -> TTL runs from now
   r.meta = s->meta;
@@ -328,11 +371,9 @@ void CameraOwner::handleDiscard(CameraReq& r) {
   }
   // Freed immediately — not a silent eviction: the caller explicitly
   // states the imageId won't be used again (one-shot snapshot; docs/02
-  // explicit lifetime until the provider finishes reading). Owner ops are
-  // serialized on one task -> providerReading/refCount can't change mid-op.
+  // explicit lifetime until the consumer finishes reading).
   s->occupied = false;
   s->refCount = 0;
-  s->providerReading = false;
   s->meta = ImageMeta{};
   s->lastRefMs = 0;
   r.ctrl.status = Status::Ok();
@@ -349,32 +390,19 @@ void CameraOwner::handleRead(CameraReq& r) {
     r.ctrl.status = Status::Fail(Err::NotSupported, "mime not supported");
     return;
   }
-  if (!r.sink) {
-    r.ctrl.status = Status::Fail(Err::InvalidArgument, "sink null");
-    return;
-  }
-  s->providerReading = true;
-  Status st = Status::Ok();
-  size_t off = 0;
-  while (off < s->meta.bytes) {
-    // A caller that ran out of deadline marks the request abandoned —
-    // stop the stream ASAP; the sink is a stack object owned by the caller
-    // task.
-    if (r.ctrl.state == kOwnerAbandoned) {
-      st = Status::Fail(Err::Internal, "read abandoned");
-      break;
-    }
-    size_t n = s->meta.bytes - off;
+  // One bounded chunk per request — offset >= bytes is a plain EOF
+  // (dataLen 0), not an error: the facade pumps until then and a mid-read
+  // TTL/discard surfaces as an honest NotFound on the next chunk.
+  r.dataLen = 0;
+  if (r.offset < s->meta.bytes) {
+    uint32_t n = s->meta.bytes - r.offset;
     if (n > cfg::kIoChunk) n = cfg::kIoChunk;
-    st = r.sink->write(s->buf + off, n);
-    if (!st.ok()) break;
-    off += n;
+    memcpy(r.data, s->buf + r.offset, n);
+    r.dataLen = n;
+    s->lastRefMs = nowMs();  // a live reader keeps the TTL honest
   }
-  s->providerReading = false;
   r.meta = s->meta;
-  r.ctrl.status = st;
-  // Tell the facade the sink won't be touched again (see readImage).
-  if (r.readDone) xSemaphoreGive(r.readDone);
+  r.ctrl.status = Status::Ok();
 }
 
 void CameraOwner::dropHeldFrame() {
@@ -461,7 +489,7 @@ CameraOwner::StagingSlot* CameraOwner::findById(const char* imageId) {
 
 CameraOwner::StagingSlot* CameraOwner::findFree() {
   for (auto& s : slots_) {
-    if (s.buf && !s.occupied && s.refCount == 0 && !s.providerReading) {
+    if (s.buf && !s.occupied && s.refCount == 0) {
       return &s;
     }
   }
@@ -470,7 +498,7 @@ CameraOwner::StagingSlot* CameraOwner::findFree() {
 
 void CameraOwner::sweepExpired(uint32_t now) {
   for (auto& s : slots_) {
-    if (s.occupied && s.refCount == 0 && !s.providerReading &&
+    if (s.occupied && s.refCount == 0 &&
         (int32_t)(now - s.lastRefMs) > (int32_t)cfg::kImageTtlMs) {
       ESP_LOGI(kTag, "staging %s expired (TTL %lu s) — slot freed",
                s.meta.imageId, (unsigned long)(cfg::kImageTtlMs / 1000));

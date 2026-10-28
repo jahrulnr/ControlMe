@@ -26,8 +26,8 @@ controlme::Status handleLogDownload(transport::HttpRequest& req, void* ctx) {
   else if (strcmp(which, "previous") == 0) wf = controlme::LogFile::Previous;
   else return req.sendProblem(controlme::Err::NotFound, "log not found");
 
-  // PSRAM chunk — the IDeviceLog Timeout rule: dst is deliberately
-  // leaked since the owner may still be writing to it.
+  // PSRAM chunk — dst is written by the facade only on success, so this
+  // buffer is always freeable (no owner-side alias survives a timeout).
   auto buf = controlme::psramArr<char>(controlme::cfg::kIoChunk);
   if (!buf) {
     return req.sendProblem(controlme::Err::Internal, "log buffer alloc");
@@ -42,11 +42,6 @@ controlme::Status handleLogDownload(transport::HttpRequest& req, void* ctx) {
         app.logs->read(wf, off, buf.get(), controlme::cfg::kIoChunk,
                        controlme::cfg::kToolTimeoutMs, res);
     if (!st.ok()) {
-      if (st.code == controlme::Err::Timeout) {
-        ESP_LOGW(kTag, "log download timeout — %u B chunk left leaked",
-                 (unsigned)controlme::cfg::kIoChunk);
-        buf.release();
-      }
       if (first) return req.sendProblem(st.code, st.detail);
       return st;  // stream already started — the bridge closes the connection
     }

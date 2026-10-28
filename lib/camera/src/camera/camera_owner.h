@@ -31,7 +31,7 @@ enum class CameraOp : uint8_t {
   Pin,       // refCount++ — pinned permanently past TTL
   Release,   // refCount--; reaching 0 -> lastRefMs=now (TTL starts running)
   Discard,   // free the slot immediately — one-shot consumer (HTTP snapshot)
-  Read,      // stream slot contents to sink in 4 KiB under the providerReading flag
+  Read,      // copy ONE kIoChunk at `offset` into data[] (facade pumps)
   Stat,      // metadata only, no stream
   Tick,      // explicit maintenance (TTL sweep) — hook for the supervisor
   StreamBegin,     // lock the driver: capture -> RESOURCE_BUSY until StreamEnd
@@ -41,20 +41,21 @@ enum class CameraOp : uint8_t {
 };
 
 // Request POD — OwnerTask contract: OwnerCtrl MUST be the first member.
-// The `sink`/`meta` fields are used by the Read/Capture/Stat ops; sink is an
-// object owned by the caller task that stays alive while the owner streams.
-// `readDone` (Read op): facade-owned semaphore — given by the owner when the
-// stream is truly finished, so a timed-out facade can wait before the sink
-// (caller's stack) is destroyed — closes a use-after-free.
+// Read carries a bounded bounce buffer: the owner copies ONE kIoChunk from
+// the staging slot at `offset` into data[] and reports dataLen. The facade
+// pumps offset->end and writes each chunk to the caller's sink in the
+// CALLER task — the owner never touches a caller pointer, so nothing
+// caller-owned outlives a facade timeout (no sink/semaphore handoff).
 struct CameraReq {
   OwnerCtrl ctrl;
   CameraOp op = CameraOp::Tick;
   char imageId[cfg::kIdCap] = {};
-  IByteSink* sink = nullptr;            // Read op only
-  SemaphoreHandle_t readDone = nullptr; // Read op only
+  uint32_t offset = 0;                  // Read: byte offset into the image
   ImageMeta meta{};                     // output: Capture/Stat/Read
   const uint8_t* frame = nullptr;       // output: StreamPull, PSRAM framebuffer
   uint32_t frameLen = 0;
+  uint32_t dataLen = 0;                 // output: Read — valid bytes in data[]
+  uint8_t data[cfg::kIoChunk] = {};     // Read: chunk bounce buffer
 };
 
 class CameraOwner : public ICamera, public OwnerTask<CameraReq> {
@@ -91,8 +92,7 @@ class CameraOwner : public ICamera, public OwnerTask<CameraReq> {
     uint8_t* buf = nullptr;          // kStagingMaxBytes, PSRAM when available
     ImageMeta meta{};
     uint8_t refCount = 0;
-    uint32_t lastRefMs = 0;          // last reference / capture time
-    bool providerReading = false;    // being streamed — TTL must not touch
+    uint32_t lastRefMs = 0;          // last reference / capture / read chunk
     bool occupied = false;           // holding an image (valid imageId)
   };
 

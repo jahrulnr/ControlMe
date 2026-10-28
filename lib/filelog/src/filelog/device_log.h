@@ -11,12 +11,11 @@
 // Both push bytes into a static DRAM ring (IRAM-safe, no FreeRTOS/PSRAM/
 // heap); the owner task drains it to the file periodically.
 //
-// Timeout rule on read: dst is a caller-owned PSRAM buffer that must stay
-// valid until call() returns — the owner writes to dst inside the heap
-// request whose ownership transfers on abandon, but dst itself belongs to
-// the caller; on Err::Timeout the caller MUST NOT free dst right away (the
-// owner may still be writing) — project convention: dst is allocated via
-// psramArr and deliberately leaked (ESP_LOGW) on Timeout.
+// Read lifetime: the request carries its own bounce buffer (data[]) — the
+// owner writes there, never to caller memory, and the facade memcpy's to
+// dst on success only. On Err::Timeout the request (buffer included) is
+// freed by the owner task (owner_task.h abandon rule): dst stays owned by
+// the caller — nothing leaks, nothing dangles.
 #include <stddef.h>
 #include <stdint.h>
 #include <FS.h>
@@ -59,11 +58,16 @@ class DeviceLog : public IDeviceLog {
     OwnerCtrl ctrl;
     enum class Op : uint8_t { Read, Flush } op;
     LogFile which;
-    size_t offset;
-    char* dst;
-    size_t cap;
+    size_t offset = 0;
+    size_t cap = 0;
     LogReadResult res;
+    // Read bounce buffer — request-owned: the owner writes here and the
+    // buffer dies with the request on abandon; the facade copies to dst.
+    char data[cfg::kIoChunk] = {};
   };
+  // ~8.4 KiB — heap only (PSRAM-first); two LogReq would overflow a
+  // caller's stack (supervisor 4 KiB, httpd 8 KiB).
+  struct LogReqPair { LogReq in, o; };
 
   static void handle(LogReq& r, void* ctx);
   static void idle(void* ctx);      // periodic drain tick (kLogPollMs)

@@ -1,5 +1,6 @@
 #include "llmproto/json_mini.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -201,7 +202,9 @@ JsonValue* JsonDoc::parseNumber() {
   buf[n] = '\0';
   char* ep = nullptr;
   double d = strtod(buf, &ep);
-  if (ep != buf + n) {
+  // Overflow ("1e999") -> inf; a stored inf would serialize as "inf" —
+  // invalid JSON. Reject non-finite results before storing.
+  if (ep != buf + n || !isfinite(d)) {
     err_ = JsonErr::Malformed;
     return nullptr;
   }

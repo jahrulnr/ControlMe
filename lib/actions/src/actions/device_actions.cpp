@@ -840,21 +840,14 @@ Status tLogRead(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   if (len == 0) len = 1;
   if (len > cfg::kIoChunk) len = cfg::kIoChunk;
 
-  // Raw PSRAM buffer (Timeout rule: dst may leak — don't free now since
-  // the owner may still be writing).
+  // The owner writes into a request-owned bounce buffer; dst is touched by
+  // the facade only on success — this buffer is always freeable.
   auto raw = controlme::psramArr<char>((size_t)len);
   if (!raw) return Status::Fail(Err::Internal, "log_read alloc");
   controlme::LogReadResult res{};
   Status st = app.logs->read(wf, (size_t)off, raw.get(), (size_t)len,
                              cfg::kToolTimeoutMs, res);
-  if (!st.ok()) {
-    if (st.code == Err::Timeout) {
-      ESP_LOGW("actions", "log_read timeout — %u B buffer left leaked",
-               (unsigned)len);
-      raw.release();
-    }
-    return st;
-  }
+  if (!st.ok()) return st;
 
   // Result in a PSRAM kMcpToolResultCap buffer (NOT the 960 B JsonBuf —
   // this tool carries a larger log text payload).

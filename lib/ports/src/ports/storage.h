@@ -44,8 +44,9 @@ class IStorage {
                       IByteSink& sink) = 0;
 
   // --- 4-phase write transaction; one write lease per path (docs/03
-  // sd_write) --- mode: "create" | "replace"; expectedRevision required for
-  // replace.
+  // sd_write) --- mode: "create" | "replace"; create requires a missing
+  // target (existing -> InvalidArgument); replace requires matching
+  // expectedRevision (-> RevisionConflict).
   virtual Status writeBegin(const char* path, bool replace, uint64_t expectedRevision,
                             char uploadIdOut[cfg::kIdCap]) = 0;
   // data already base64-decoded; offset must == server nextOffset.

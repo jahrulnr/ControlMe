@@ -113,6 +113,19 @@ int main() {
     CHECK(jsonMember(d.root(), "f")->num == -250.0);
   }
 
+  // 8) Overflow -> inf is not valid JSON: rejected before storing (a stored
+  //    inf would serialize as "inf" and corrupt the RPC response).
+  {
+    JsonDoc d;
+    const char* over = "{\"id\":1e999}";
+    CHECK(d.parse(over, strlen(over)) == JsonErr::Malformed);
+    const char* overNeg = "{\"id\":-1e999}";
+    CHECK(d.parse(overNeg, strlen(overNeg)) == JsonErr::Malformed);
+    const char* big = "{\"id\":1e308}";   // finite -> still accepted
+    CHECK(d.parse(big, strlen(big)) == JsonErr::Ok);
+    CHECK(jsonMember(d.root(), "id")->num == 1e308);
+  }
+
   printf("PASS test_json_mini\n");
   return 0;
 }

@@ -303,7 +303,7 @@ void DeviceLog::handle(LogReq& r, void* ctx) {
   switch (r.op) {
     case LogReq::Op::Read:
       if (r.which == LogFile::Current) self.drain(true);  // freshest data first
-      self.readFile(pathOf(r.which), r.offset, r.dst, r.cap, r.res);
+      self.readFile(pathOf(r.which), r.offset, r.data, r.cap, r.res);
       r.ctrl.status = Status::Ok();
       break;
     case LogReq::Op::Flush:
@@ -317,21 +317,31 @@ void DeviceLog::handle(LogReq& r, void* ctx) {
 
 Status DeviceLog::read(LogFile which, size_t offset, char* dst, size_t cap,
                        uint32_t timeoutMs, LogReadResult& out) {
-  LogReq in{}, res{};
+  auto* rp = controlme::psramNew<LogReqPair>();
+  if (!rp) return Status::Fail(Err::Internal, "log req alloc");
+  LogReq& in = rp->in;
+  in = LogReq{};
   in.op = LogReq::Op::Read;
   in.which = which;
   in.offset = offset;
-  in.dst = dst;
-  in.cap = cap;
-  Status st = owner_.call(in, res, timeoutMs);
-  if (st.ok()) out = res.res;
+  in.cap = cap > cfg::kIoChunk ? cfg::kIoChunk : cap;  // bounce-buffer bound
+  Status st = owner_.call(in, rp->o, timeoutMs);
+  if (st.ok()) {
+    out = rp->o.res;
+    if (dst && out.outLen) memcpy(dst, rp->o.data, out.outLen);
+  }
+  controlme::psramDelete(rp);
   return st;
 }
 
 Status DeviceLog::flush(uint32_t timeoutMs) {
-  LogReq in{}, res{};
-  in.op = LogReq::Op::Flush;
-  return owner_.call(in, res, timeoutMs);
+  auto* rp = controlme::psramNew<LogReqPair>();
+  if (!rp) return Status::Fail(Err::Internal, "log req alloc");
+  rp->in = LogReq{};
+  rp->in.op = LogReq::Op::Flush;
+  Status st = owner_.call(rp->in, rp->o, timeoutMs);
+  controlme::psramDelete(rp);
+  return st;
 }
 
 }  // namespace controlme
