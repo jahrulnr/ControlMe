@@ -37,7 +37,7 @@ struct App {
   IStorage* storage = nullptr;
   IServo* servo = nullptr;
   ISdServoCoordinator* coord = nullptr;  // SD<->GPIO13 handoff orchestration
-  IToolDispatcher* tools = nullptr;      // DeviceActions (13 tools via MCP)
+  IToolDispatcher* tools = nullptr;      // DeviceActions (14 tools via MCP)
   IRunQueue* runs = nullptr;             // kept — reboot_supervisor calls cancelAll() when installed
   IReboot* rebootCtl = nullptr;          // reboot supervisor
   IWebSearch* webSearch = nullptr;

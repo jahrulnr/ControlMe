@@ -1,4 +1,4 @@
-// MCP module — instantiates DeviceActions (13-tool catalog) + McpServer
+// MCP module — instantiates DeviceActions (14-tool catalog) + McpServer
 // (mcpproto, pure) + McpTransport :81. All large objects in PSRAM (psramNew/
 // psramArr): the ~29 KiB JsonDoc and the response buffer must not go to
 // internal.

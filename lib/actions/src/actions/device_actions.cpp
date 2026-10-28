@@ -368,7 +368,7 @@ Status tDeviceStatus(App& app, cJSON*, IByteSink& out, ToolAttach*) {
       "{\"status\":\"ok\",\"bootId\":\"%s\",\"uptimeMs\":%llu,"
       "\"heapFree\":%u,\"heapMinFree\":%u,\"heapLargestBlock\":%u,"
       "\"lastEventSequence\":%lu,\"sdMounted\":%s,\"wifiConnected\":%s,"
-      "\"wallSynced\":%s}",
+      "\"wallSynced\":%s,\"wallMs\":%llu,\"timeSource\":\"%s\"}",
       app.bootId, (unsigned long long)(app.clock ? app.clock->monoMs() : 0),
       (unsigned)esp_get_free_heap_size(),
       (unsigned)esp_get_minimum_free_heap_size(),
@@ -377,7 +377,32 @@ Status tDeviceStatus(App& app, cJSON*, IByteSink& out, ToolAttach*) {
       (unsigned long)app.lastEventSequence,
       (app.storage && app.storage->isMounted()) ? "true" : "false",
       app.wifiConnected ? "true" : "false",
-      (app.clock && app.clock->wallSynced()) ? "true" : "false");
+      (app.clock && app.clock->wallSynced()) ? "true" : "false",
+      (unsigned long long)(app.clock ? app.clock->wallMs() : 0),
+      app.clock ? app.clock->timeSource() : "none");
+  return flushBuf(out, jb);
+}
+
+// device_set_time — agent-pushed epoch ms for when SNTP can't reach a
+// server (offline LAN). A later SNTP sync overrides it (timeSource flips
+// to "sntp").
+Status tDeviceSetTime(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
+  uint64_t epochMs = 0;
+  if (!argU64(a, "epochMs", epochMs)) {
+    return Status::Fail(Err::InvalidArgument, "epochMs argument required");
+  }
+  // Floor 2020-01-01 — mostly catches agents passing SECONDS, not ms.
+  // Ceil 2100-01-01 — catches microseconds/nanosecond epochs.
+  if (epochMs < 1577836800000ULL || epochMs > 4102444800000ULL) {
+    return Status::Fail(Err::InvalidArgument,
+                        "epochMs must be epoch milliseconds (2020..2100)");
+  }
+  if (!app.clock || !app.clock->setWallMs(epochMs)) {
+    return Status::Fail(Err::Internal, "clock set failed");
+  }
+  JsonBuf jb;
+  jb.fmt("{\"epochMs\":%llu,\"timeSource\":\"%s\",\"wallSynced\":true}",
+         (unsigned long long)epochMs, app.clock->timeSource());
   return flushBuf(out, jb);
 }
 
@@ -965,6 +990,10 @@ constexpr ToolEntry kTools[] = {
     {"device_reboot", "Reboot the ESP32 device",
      "{\"type\":\"object\",\"properties\":{\"reason\":{\"type\":\"string\"}}}",
      &tDeviceReboot},
+    {"device_set_time", "Set the device wall clock manually (epoch ms); SNTP overrides when it syncs",
+     "{\"type\":\"object\",\"properties\":{\"epochMs\":{\"type\":\"integer\","
+     "\"minimum\":1577836800000}},\"required\":[\"epochMs\"]}",
+     &tDeviceSetTime},
     {"sd_list", "List files on the SD card path",
      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},"
      "\"cursor\":{\"type\":\"string\"},\"limit\":{\"type\":\"integer\","

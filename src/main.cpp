@@ -10,6 +10,7 @@
 #include <esp_log.h>
 #include <esp_random.h>
 #include <esp_timer.h>
+#include <esp_sntp.h>
 #include <nvs.h>
 #include <nvs_flash.h>
 #include <cJSON.h>
@@ -29,8 +30,11 @@ static const char* kTag = "app";
 static controlme::App g_app;
 
 // ---------------------------------------------------------------- IClock
-// mono from esp_timer; wall from gettimeofday — valid only when SNTP is
-// synced. SNTP not configured yet -> wallSynced() always false (honest).
+// mono from esp_timer; wall from gettimeofday — valid once a sync source
+// wrote it. src_ records WHO wrote the wall clock last (manual tool or the
+// SNTP completion callback): polling esp_sntp_get_sync_status() is unstable
+// (it flips per sync round — observed live: wallSynced true + source none),
+// the callback only fires on a real time update.
 class EspClock : public controlme::IClock {
  public:
   uint64_t monoMs() override {
@@ -41,7 +45,28 @@ class EspClock : public controlme::IClock {
     gettimeofday(&tv, nullptr);
     return (uint64_t)tv.tv_sec * 1000ULL + (uint64_t)tv.tv_usec / 1000ULL;
   }
-  bool wallSynced() override { return false; }
+  bool setWallMs(uint64_t epochMs) override {
+    struct timeval tv;
+    tv.tv_sec = (time_t)(epochMs / 1000ULL);
+    tv.tv_usec = (suseconds_t)(epochMs % 1000ULL) * 1000;
+    if (settimeofday(&tv, nullptr) != 0) return false;
+    src_ = kSrcManual;
+    return true;
+  }
+  bool wallSynced() override { return src_ != kSrcNone; }
+  const char* timeSource() override {
+    return src_ == kSrcSntp    ? "sntp"
+           : src_ == kSrcManual ? "manual"
+                                : "none";
+  }
+  void onSntpSync() { src_ = kSrcSntp; }
+
+ private:
+  static constexpr uint8_t kSrcNone = 0, kSrcManual = 1, kSrcSntp = 2;
+  // Last-writer-wins: setWallMs and the sntp cb run on different tasks; a
+  // mid-window overlap can misattribute the source until the next write —
+  // attribution only, the wall value itself is always a real clock write.
+  volatile uint8_t src_ = kSrcNone;
 };
 static EspClock g_clock;
 
@@ -144,6 +169,10 @@ static void connectWifi() {
     ESP_LOGW(kTag, "wifi: no credentials (NVS wifi_ssid / macro) — LAN off");
     return;
   }
+  // SNTP completion callback — registered once here; GOT_IP only (re)starts
+  // configTime per (re)connect, the callback fires on each real sync.
+  esp_sntp_set_time_sync_notification_cb(
+      [](struct timeval*) { g_clock.onSntpSync(); });
   // Honest status when connect is slow / DHCP IP changes: event (not poll).
   WiFi.onEvent(
       [](arduino_event_t*) {
@@ -151,6 +180,8 @@ static void connectWifi() {
         snprintf(g_app.httpBaseUrl, sizeof(g_app.httpBaseUrl), "http://%s",
                  WiFi.localIP().toString().c_str());
         ESP_LOGI(kTag, "wifi: got ip %s", g_app.httpBaseUrl);
+        // UTC epoch — agents correlate mtimes/logs on their own timezone.
+        configTime(0, 0, "pool.ntp.org", "time.nist.gov");
       },
       ARDUINO_EVENT_WIFI_STA_GOT_IP);
   WiFi.onEvent(
