@@ -1,6 +1,6 @@
 # 05 — Peta Pin & Perangkat Keras ESP32-CAM
 
-> **Status: DRAFT UNTUK REVIEW** — peta pin kamera dan SD dicocokkan dengan **referensi Espressif LOKAL** yang sudah dibaca (bukan verifikasi online, bukan hasil uji unit). Unit persis di foto belum diverifikasi revisi/clone-nya.
+> Peta pin kamera dan SD dicocokkan dengan **referensi Espressif LOKAL** yang sudah dibaca (bukan verifikasi online, bukan hasil uji unit). Unit persis di foto belum diverifikasi revisi/clone-nya.
 
 ## Modul (dari foto pengguna)
 
