@@ -1,0 +1,4 @@
+interface:
+  display_name: "ControlMe Board Viewer"
+  short_description: "3D hardware viewer and ControlMe pin references"
+  default_prompt: "Use $controlme-board-viewer to update the ControlMe board viewer and verify the result on desktop and mobile."

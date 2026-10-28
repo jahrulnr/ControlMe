@@ -1,0 +1,4 @@
+interface:
+  display_name: "ControlMe Firmware"
+  short_description: "ESP32-CAM firmware and FreeRTOS owner tasks"
+  default_prompt: "Use $controlme-firmware to update ControlMe firmware with the owner-task pattern and run the relevant build checks."

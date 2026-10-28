@@ -1,0 +1,4 @@
+interface:
+  display_name: "ControlMe MCP Tools"
+  short_description: "Device tool contracts and on-board MCP transport"
+  default_prompt: "Use $controlme-mcp-tools to update a ControlMe tool or MCP transport while preserving contracts and buffer limits."
