@@ -28,6 +28,15 @@ void controlme_register_servo(controlme::App& app) {
   if (!st.ok()) {
     ESP_LOGE(kTag, "servo owner start failed: %s",
              st.detail ? st.detail : controlme::errName(st.code));
+  } else {
+    // tilt (GPIO12) is not SD-shared — restore it right away instead of
+    // waiting for mountSd's restore, which only owns GPIO13. Channels are
+    // born suspended; restore attaches PWM at the neutral angle.
+    controlme::Status rt = s_servo.restoreChannel("tilt");
+    if (!rt.ok()) {
+      ESP_LOGW(kTag, "tilt restore failed: %s",
+               rt.detail ? rt.detail : controlme::errName(rt.code));
+    }
   }
   st = s_coord.begin();
   if (!st.ok()) {
@@ -40,5 +49,5 @@ void controlme_register_servo(controlme::App& app) {
   app.servo = &s_servo;
   app.coord = &s_coord;
 
-  app.addFeature("{\"servo\":{\"channels\":[\"pan\"]}}");
+  app.addFeature("{\"servo\":{\"channels\":[\"pan\",\"tilt\"]}}");
 }

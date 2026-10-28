@@ -2,10 +2,10 @@
 // Servo owner (adapter) — single owner of the servo LEDC PWM (docs/02,
 // docs/05).
 //
-// Baseline: one "pan" channel on GPIO13 shared with SD DAT3. The channel
-// table supports a second "tilt" slot (GPIO12, LEDC channel2) deliberately
-// kept configured=false until it passes electrical qualification (docs/05
-// Servo).
+// Channels: "pan" on GPIO13 shared with SD DAT3, plus "tilt" on GPIO12
+// (LEDC channel2). GPIO12 is a VDD_SDIO strapping pin — an external HIGH
+// pull during reset picks the wrong flash voltage, so tilt assumes the
+// attached hardware holds it LOW at boot (docs/05 Servo).
 //
 // LEDC: timer1 @50 Hz, 14-bit resolution, explicit speed_mode
 // LEDC_LOW_SPEED_MODE — chosen because it exists on every ESP32 variant

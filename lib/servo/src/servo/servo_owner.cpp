@@ -13,7 +13,9 @@ namespace controlme {
 
 static const char* kTag = "servo";
 
-// Pin candidates from docs/05 — pan is used, tilt conditional (not configured yet).
+// Pin map from docs/05 — both channels configured; GPIO12 is a VDD_SDIO
+// strapping pin, so tilt relies on the attached hardware keeping it LOW at
+// reset (user-qualified).
 static const char* kPanId = "pan";
 static const char* kTiltId = "tilt";
 static constexpr int kPanGpio = 13;
@@ -38,7 +40,7 @@ ServoOwner::ServoOwner()
           // post-SD-mount restore (docs/05 step 8 — mount precedes PWM).
           {kPanId, kPanGpio, LEDC_CHANNEL_1, /*configured*/ true,
            /*suspended*/ true, /*attached*/ false, kInitialAngleDeg},
-          {kTiltId, kTiltGpio, LEDC_CHANNEL_2, /*configured*/ false,
+          {kTiltId, kTiltGpio, LEDC_CHANNEL_2, /*configured*/ true,
            /*suspended*/ true, /*attached*/ false, kInitialAngleDeg},
       } {}
 

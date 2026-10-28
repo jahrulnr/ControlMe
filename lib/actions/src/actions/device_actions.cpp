@@ -1001,7 +1001,7 @@ constexpr ToolEntry kTools[] = {
      "{\"type\":\"string\"},\"totalBytes\":{\"type\":\"integer\"}},"
      "\"required\":[\"phase\"]}",
      &tSdWrite},
-    {"servo_set", "Set a servo channel angle in degrees",
+    {"servo_set", "Set a servo channel angle in degrees (pan|tilt)",
      "{\"type\":\"object\",\"properties\":{\"servoId\":{\"type\":\"string\"},"
      "\"angleDeg\":{\"type\":\"number\"}},\"required\":[\"servoId\","
      "\"angleDeg\"]}",
