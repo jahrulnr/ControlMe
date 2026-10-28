@@ -1,6 +1,10 @@
+<div align="center">
+
 # ControlMe
 
 **From conversation to physical action.**
+
+</div>
 
 ControlMe is firmware for classic AI-Thinker-style ESP32-CAM boards that makes
 physical hardware available to external AI agents through MCP (Model Context
