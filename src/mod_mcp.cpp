@@ -29,20 +29,25 @@ void controlme_register_mcp(controlme::App& app) {
       controlme::psramMalloc(controlme::cfg::kToolArgsMax));
   char* toolOut = static_cast<char*>(
       controlme::psramMalloc(controlme::cfg::kMcpToolResultCap));
-  if (!doc || !args || !toolOut) {
+  char* attach = static_cast<char*>(
+      controlme::psramMalloc(controlme::cfg::kMcpAttachCap));
+  if (!doc || !args || !toolOut || !attach) {
     ESP_LOGE(kTag, "MCP buffer alloc failed — MCP off");
     controlme::psramFree(args);
     controlme::psramFree(toolOut);
+    controlme::psramFree(attach);
     controlme::psramDelete(doc);
     return;
   }
   controlme::mcp::McpBuffers bufs{doc, args, controlme::cfg::kToolArgsMax,
-                                  toolOut, controlme::cfg::kMcpToolResultCap};
+                                  toolOut, controlme::cfg::kMcpToolResultCap,
+                                  attach, controlme::cfg::kMcpAttachCap};
   auto* server = controlme::psramNew<controlme::mcp::McpServer>(*tools, bufs);
   if (!server) {
     ESP_LOGE(kTag, "McpServer alloc failed — MCP off");
     controlme::psramFree(args);
     controlme::psramFree(toolOut);
+    controlme::psramFree(attach);
     controlme::psramDelete(doc);
     return;
   }

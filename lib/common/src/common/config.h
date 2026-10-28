@@ -99,6 +99,10 @@ inline constexpr uint8_t kMcpAsyncMax = kMcpMaxOpenSockets - 1;
 inline constexpr size_t kMcpBodyMax = 16 * 1024;     // body POST /mcp & /messages
 inline constexpr size_t kMcpRespCap = 16 * 1024;     // envelope; tool text is escaped 2x inside it
 inline constexpr size_t kMcpToolResultCap = 8 * 1024;  // raw DeviceActions JSON result (PSRAM)
+// Base64 attachment scratch (PSRAM) — an inline image content block when the
+// payload fits; ~6 KiB binary covers QVGA. Bigger frames fall back to the
+// downloadUrl/resource_link in the same result.
+inline constexpr size_t kMcpAttachCap = 8 * 1024;
 inline constexpr uint8_t kMcpJobQueue = 8;
 inline constexpr uint32_t kMcpKeepaliveMs = 5000;
 

@@ -13,9 +13,10 @@
 //    result JSON stays <=1 KiB (b64 856 + head/tail).
 //  * sd_write CHUNK: dataBase64 is decoded into a <=4 KiB heap buffer
 //    (cfg::kIoChunk) per the docs/03 phase contract.
-//  * image_read = metadata/ref only (docs/03 "Images & Vision") — NOT image
-//    bytes; bytes are sent to the provider as a content part by another
-//    adapter.
+//  * image_read = metadata + downloadUrl; when the caller passes a
+//    ToolAttach the staged JPEG is also streamed inline as base64 (the MCP
+//    image content block) if it fits the attach budget — bigger frames stay
+//    reachable via downloadUrl.
 //
 // Null port mapping (feature not installed): web_* -> ProviderUnavailable,
 // others -> NotSupported. admissionOpen=false -> DeviceRebooting.
@@ -56,6 +57,7 @@ using controlme::ImageMeta;
 using controlme::IStorage;
 using controlme::ListPage;
 using controlme::Status;
+using controlme::ToolAttach;
 using controlme::WebSearchResult;
 using controlme::copyStr;
 namespace cfg = controlme::cfg;
@@ -316,6 +318,34 @@ IStorage* storageOr(App& app, Status& st) {
   return app.storage;
 }
 
+// Absolute staging URL when wifi is up (httpBaseUrl set), else the relative
+// path — same self-describing pattern as log_read's downloadUrl.
+void fmtImageUrl(App& app, const char* imageId, char* out, size_t cap) {
+  snprintf(out, cap, "%s/api/v1/images/%s", app.httpBaseUrl, imageId);
+}
+
+// Fill att link fields and stream the staged JPEG as inline base64 when it
+// fits the caller's budget — shared by camera_capture and image_read. The
+// link fields are set even when the payload is skipped (the URL still works).
+// pin holds the slot across the stream (TTL/concurrent-capture race) — same
+// pattern as GET /api/v1/images/*.
+void attachImage(App& app, const char* url, ImageMeta& meta, ToolAttach* att) {
+  copyStr(att->uri, sizeof(att->uri), url);
+  copyStr(att->name, sizeof(att->name), meta.imageId);
+  copyStr(att->mime, sizeof(att->mime), meta.mime);
+  const size_t b64 = ((size_t)meta.bytes + 2) / 3 * 4;
+  if (att->data && b64 > 0 && b64 <= att->dataCap) {
+    Status pst = app.camera->pin(meta.imageId);
+    if (pst.ok()) {
+      B64Sink enc(*att->data);
+      Status rst = app.camera->readImage(meta.imageId, enc, meta);
+      app.camera->release(meta.imageId);
+      if (rst.ok()) rst = enc.finish();
+      att->hasData = rst.ok();
+    }
+  }
+}
+
 const char* imageMimeOf(const char* path) {
   const char* dot = strrchr(path, '.');
   if (!dot) return nullptr;
@@ -330,9 +360,9 @@ const char* imageMimeOf(const char* path) {
 
 // ------------------------------------------------------------- tools
 
-using ToolFn = Status (*)(App&, cJSON*, IByteSink&);
+using ToolFn = Status (*)(App&, cJSON*, IByteSink&, ToolAttach*);
 
-Status tDeviceStatus(App& app, cJSON*, IByteSink& out) {
+Status tDeviceStatus(App& app, cJSON*, IByteSink& out, ToolAttach*) {
   JsonBuf jb;
   jb.fmt(
       "{\"status\":\"ok\",\"bootId\":\"%s\",\"uptimeMs\":%llu,"
@@ -351,7 +381,7 @@ Status tDeviceStatus(App& app, cJSON*, IByteSink& out) {
   return flushBuf(out, jb);
 }
 
-Status tDeviceReboot(App& app, cJSON* a, IByteSink& out) {
+Status tDeviceReboot(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   if (!app.rebootCtl) {
     return Status::Fail(Err::NotSupported, "reboot ctl not installed");
   }
@@ -369,7 +399,7 @@ Status tDeviceReboot(App& app, cJSON* a, IByteSink& out) {
   return flushBuf(out, jb);
 }
 
-Status tSdList(App& app, cJSON* a, IByteSink& out) {
+Status tSdList(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   Status st;
   IStorage* s = storageOr(app, st);
   if (!s) return st;
@@ -429,7 +459,7 @@ Status tSdList(App& app, cJSON* a, IByteSink& out) {
   return flushBuf(out, jb);
 }
 
-Status tSdStat(App& app, cJSON* a, IByteSink& out) {
+Status tSdStat(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   Status st;
   IStorage* s = storageOr(app, st);
   if (!s) return st;
@@ -450,7 +480,7 @@ Status tSdStat(App& app, cJSON* a, IByteSink& out) {
   return flushBuf(out, jb);
 }
 
-Status tSdRead(App& app, cJSON* a, IByteSink& out) {
+Status tSdRead(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   Status st;
   IStorage* s = storageOr(app, st);
   if (!s) return st;
@@ -495,7 +525,7 @@ Status tSdRead(App& app, cJSON* a, IByteSink& out) {
   return out.write((const uint8_t*)tail, (size_t)tn);
 }
 
-Status tSdMkdir(App& app, cJSON* a, IByteSink& out) {
+Status tSdMkdir(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   Status st;
   IStorage* s = storageOr(app, st);
   if (!s) return st;
@@ -514,7 +544,7 @@ Status tSdMkdir(App& app, cJSON* a, IByteSink& out) {
   return flushBuf(out, jb);
 }
 
-Status tSdRename(App& app, cJSON* a, IByteSink& out) {
+Status tSdRename(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   Status st;
   IStorage* s = storageOr(app, st);
   if (!s) return st;
@@ -538,7 +568,7 @@ Status tSdRename(App& app, cJSON* a, IByteSink& out) {
   return flushBuf(out, jb);
 }
 
-Status tSdDelete(App& app, cJSON* a, IByteSink& out) {
+Status tSdDelete(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   Status st;
   IStorage* s = storageOr(app, st);
   if (!s) return st;
@@ -557,7 +587,7 @@ Status tSdDelete(App& app, cJSON* a, IByteSink& out) {
 }
 
 // sd_write — four phases (docs/03): BEGIN/CHUNK/COMMIT/ABORT via IStorage.
-Status tSdWrite(App& app, cJSON* a, IByteSink& out) {
+Status tSdWrite(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   Status st;
   IStorage* s = storageOr(app, st);
   if (!s) return st;
@@ -653,7 +683,7 @@ Status tSdWrite(App& app, cJSON* a, IByteSink& out) {
                       "phase must be BEGIN|CHUNK|COMMIT|ABORT");
 }
 
-Status tServoSet(App& app, cJSON* a, IByteSink& out) {
+Status tServoSet(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   if (!app.servo) {
     return Status::Fail(Err::NotSupported, "servo not installed");
   }
@@ -676,7 +706,7 @@ Status tServoSet(App& app, cJSON* a, IByteSink& out) {
   return flushBuf(out, jb);
 }
 
-Status tCameraCapture(App& app, cJSON*, IByteSink& out) {
+Status tCameraCapture(App& app, cJSON*, IByteSink& out, ToolAttach* att) {
   if (!app.camera) {
     return Status::Fail(Err::NotSupported, "camera not installed");
   }
@@ -686,21 +716,27 @@ Status tCameraCapture(App& app, cJSON*, IByteSink& out) {
   ImageMeta meta{};
   Status st = app.camera->capture(meta);
   if (!st.ok()) return st;
+  char url[192];
+  fmtImageUrl(app, meta.imageId, url, sizeof(url));
   JsonBuf jb;
-  char escI[cfg::kIdCap * 2], escM[64];
+  char escI[cfg::kIdCap * 2], escM[64], escU[200];
   transport::jsonEscape(meta.imageId, escI, sizeof(escI));
   transport::jsonEscape(meta.mime, escM, sizeof(escM));
+  transport::jsonEscape(url, escU, sizeof(escU));
   jb.fmt("{\"imageId\":\"%s\",\"mime\":\"%s\",\"bytes\":%lu,\"width\":%u,"
-         "\"height\":%u}",
+         "\"height\":%u,\"downloadUrl\":\"%s\"}",
          escI, escM, (unsigned long)meta.bytes, (unsigned)meta.width,
-         (unsigned)meta.height);
+         (unsigned)meta.height, escU);
+  // "Capture & look" in one call: the fresh frame also comes back inline
+  // when it fits — no second image_read needed.
+  if (att) attachImage(app, url, meta, att);
   return flushBuf(out, jb);
 }
 
 // image_read — small metadata/ref only (docs/03): staging imageId OR an
 // SD path; NOT image bytes (bytes = multimodal content part via another
 // adapter).
-Status tImageRead(App& app, cJSON* a, IByteSink& out) {
+Status tImageRead(App& app, cJSON* a, IByteSink& out, ToolAttach* att) {
   char imageId[cfg::kIdCap] = {};
   char path[cfg::kPathCap] = {};
   argStr(a, "imageId", imageId, sizeof(imageId));
@@ -715,14 +751,19 @@ Status tImageRead(App& app, cJSON* a, IByteSink& out) {
     if (strncmp(meta.mime, "image/", 6) != 0) {
       return Status::Fail(Err::NotSupported, "unknown image mime");
     }
+    char url[192];
+    fmtImageUrl(app, meta.imageId, url, sizeof(url));
     JsonBuf jb;
-    char escI[cfg::kIdCap * 2], escM[64];
+    char escI[cfg::kIdCap * 2], escM[64], escU[200];
     transport::jsonEscape(meta.imageId, escI, sizeof(escI));
     transport::jsonEscape(meta.mime, escM, sizeof(escM));
+    transport::jsonEscape(url, escU, sizeof(escU));
     jb.fmt("{\"imageId\":\"%s\",\"mime\":\"%s\",\"bytes\":%lu,\"width\":%u,"
-           "\"height\":%u,\"pinned\":%s,\"source\":\"staging\"}",
+           "\"height\":%u,\"pinned\":%s,\"source\":\"staging\","
+           "\"downloadUrl\":\"%s\"}",
            escI, escM, (unsigned long)meta.bytes, (unsigned)meta.width,
-           (unsigned)meta.height, meta.pinned ? "true" : "false");
+           (unsigned)meta.height, meta.pinned ? "true" : "false", escU);
+    if (att) attachImage(app, url, meta, att);
     return flushBuf(out, jb);
   }
   if (!path[0]) {
@@ -755,7 +796,7 @@ Status tImageRead(App& app, cJSON* a, IByteSink& out) {
 // log_read — DeviceLog LittleFS (current/previous boot). The result
 // carries downloadUrl for a full fetch outside MCP (a ~<=1 KiB tool result
 // doesn't fit a ~100 KiB file).
-Status tLogRead(App& app, cJSON* a, IByteSink& out) {
+Status tLogRead(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   if (!app.logs) {
     return Status::Fail(Err::NotSupported, "log not installed");
   }
@@ -834,7 +875,7 @@ Status tLogRead(App& app, cJSON* a, IByteSink& out) {
   return out.write((const uint8_t*)buf, el + (size_t)tn);
 }
 
-Status tWebSearch(App& app, cJSON* a, IByteSink& out) {
+Status tWebSearch(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   if (!app.webSearch || !app.webSearch->isConfigured()) {
     return Status::Fail(Err::ProviderUnavailable,
                         "web_search not configured");
@@ -876,7 +917,7 @@ Status tWebSearch(App& app, cJSON* a, IByteSink& out) {
   return flushBuf(out, jb);
 }
 
-Status tWebFetch(App& app, cJSON* a, IByteSink& out) {
+Status tWebFetch(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   if (!app.webFetch) {
     return Status::Fail(Err::ProviderUnavailable,
                         "web_fetch not installed");
@@ -965,9 +1006,9 @@ constexpr ToolEntry kTools[] = {
      "\"angleDeg\":{\"type\":\"number\"}},\"required\":[\"servoId\","
      "\"angleDeg\"]}",
      &tServoSet},
-    {"camera_capture", "Capture a still JPEG into staging",
+    {"camera_capture", "Capture a still JPEG into staging; returns metadata + downloadUrl + the image inline when it fits",
      "{\"type\":\"object\",\"properties\":{}}", &tCameraCapture},
-    {"image_read", "Read a staged image by id or path",
+    {"image_read", "Read a staged image by id or SD path; returns metadata + downloadUrl; staged images also come back inline when they fit",
      "{\"type\":\"object\",\"properties\":{\"imageId\":{\"type\":\"string\"},"
      "\"path\":{\"type\":\"string\"}}}",
      &tImageRead},
@@ -1008,7 +1049,8 @@ bool toolWired(const App& app, const ToolEntry& t) {
 namespace controlme {
 
 Status DeviceActions::dispatch(const char* toolName, const char* argsJson,
-                               const ToolCallCtx& ctx, IByteSink& resultJson) {
+                               const ToolCallCtx& ctx, IByteSink& resultJson,
+                               ToolAttach* attach) {
   (void)ctx;  // call identity belongs to ActionService/runner — not a tool argument
   if (!toolName || !*toolName) {
     return Status::Fail(Err::InvalidArgument, "empty toolName");
@@ -1023,7 +1065,7 @@ Status DeviceActions::dispatch(const char* toolName, const char* argsJson,
   JsonDoc jd;
   Status st = parseArgs(argsJson, jd);
   if (!st.ok()) return st;
-  return t->fn(app_, jd.root, resultJson);
+  return t->fn(app_, jd.root, resultJson, attach);
 }
 
 uint8_t DeviceActions::toolCount() {

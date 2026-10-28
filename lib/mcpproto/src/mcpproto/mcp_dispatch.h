@@ -25,6 +25,8 @@ struct McpBuffers {
   size_t argsCap;
   char* toolOut;           // raw tool JSON result + error scratch
   size_t toolOutCap;
+  char* attach;            // base64 ToolAttach scratch (may be nullptr)
+  size_t attachCap;
 };
 
 class McpServer {

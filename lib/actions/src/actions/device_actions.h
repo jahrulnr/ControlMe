@@ -25,7 +25,8 @@ class DeviceActions : public IToolDispatcher {
   explicit DeviceActions(App& app) : app_(app) {}
 
   Status dispatch(const char* toolName, const char* argsJson,
-                  const ToolCallCtx& ctx, IByteSink& resultJson) override;
+                  const ToolCallCtx& ctx, IByteSink& resultJson,
+                  ToolAttach* attach = nullptr) override;
   uint8_t toolCount() override;
   bool toolSpec(uint8_t idx, char* nameOut, size_t nameCap, char* descOut,
                 size_t descCap, char* schemaOut, size_t schemaCap) override;

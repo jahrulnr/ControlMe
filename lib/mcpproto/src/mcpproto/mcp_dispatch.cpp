@@ -139,13 +139,41 @@ bool McpServer::toolCall(const RpcRequest& r, StrSink& out) {
   ToolCallCtx ctx{};
   idToRequestId(id, ctx.requestId, sizeof(ctx.requestId));
   StrSink ts(b_.toolOut, b_.toolOutCap);
-  Status st = tools_.dispatch(toolName, b_.args, ctx, ts);
+  ToolAttach att{};
+  StrSink ds(b_.attach, b_.attachCap);
+  if (b_.attach) {
+    att.data = &ds;
+    att.dataCap = b_.attachCap ? b_.attachCap - 1 : 0;  // cap includes NUL
+  }
+  Status st = tools_.dispatch(toolName, b_.args, ctx, ts, &att);
 
   if (!writeRpcResultHead(out, id)) return finishOrTooLarge(id, out);
   if (st.ok()) {
+    // content[0] = escaped tool JSON; then the optional attachment as native
+    // blocks — image data is base64 (JSON-safe, no escaping) and uri gives
+    // the same bytes over HTTP for payloads that don't fit inline.
     bool ok = out.append("{\"content\":[{\"type\":\"text\",\"text\":\"") &&
-              emitEscaped(b_.toolOut, ts.len(), out) &&
-              out.append("\"}],\"isError\":false}") && out.append("}");
+              emitEscaped(b_.toolOut, ts.len(), out) && out.append("\"}");
+    if (ok && att.hasData && ds.len() > 0) {
+      const char* im = att.mime[0] ? att.mime : "application/octet-stream";
+      ok = out.append(",{\"type\":\"image\",\"data\":\"") &&
+           out.append(b_.attach, ds.len()) && out.append("\",\"mimeType\":\"") &&
+           emitEscaped(im, strlen(im), out) && out.append("\"}");
+    }
+    if (ok && att.uri[0]) {
+      // spec: name is REQUIRED on resource_link — fall back to the uri.
+      const char* nm = att.name[0] ? att.name : att.uri;
+      ok = out.append(",{\"type\":\"resource_link\",\"uri\":\"") &&
+           emitEscaped(att.uri, strlen(att.uri), out) &&
+           out.append("\",\"name\":\"") &&
+           emitEscaped(nm, strlen(nm), out) && out.append("\"");
+      if (ok && att.mime[0]) {
+        ok = out.append(",\"mimeType\":\"") &&
+             emitEscaped(att.mime, strlen(att.mime), out) && out.append("\"");
+      }
+      ok = ok && out.append("}");
+    }
+    ok = ok && out.append("],\"isError\":false}") && out.append("}");
     (void)ok;
     return finishOrTooLarge(id, out);
   }

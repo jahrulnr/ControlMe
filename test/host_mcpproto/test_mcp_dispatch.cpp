@@ -28,12 +28,12 @@ struct MockTools : IToolDispatcher {
   std::string lastReqId;
   int calls = 0;
 
-  uint8_t toolCount() override { return 2; }
+  uint8_t toolCount() override { return 4; }
   bool toolSpec(uint8_t i, char* name, size_t ncap, char* desc, size_t dcap,
                 char* schema, size_t scap) override {
     if (specFail) return false;
-    const char* n = i == 0 ? "echo" : "fail";
-    const char* d = i == 0 ? "echo args" : "always fails";
+    const char* n = i == 0 ? "echo" : i == 1 ? "fail" : i == 2 ? "img" : "imglink";
+    const char* d = i == 0 ? "echo args" : i == 1 ? "always fails" : "image tool";
     const char* s = i == 0 ? "{\"type\":\"object\"}"
                            : "{\"type\":\"object\",\"properties\":{}}";
     if (strlen(n) >= ncap || strlen(d) >= dcap || strlen(s) >= scap) return false;
@@ -43,13 +43,30 @@ struct MockTools : IToolDispatcher {
     return true;
   }
   Status dispatch(const char* toolName, const char* argsJson,
-                  const ToolCallCtx& ctx, IByteSink& resultJson) override {
+                  const ToolCallCtx& ctx, IByteSink& resultJson,
+                  ToolAttach* att) override {
     ++calls;
     lastName = toolName;
     lastArgs = argsJson;
     lastReqId = ctx.requestId;
     if (strcmp(toolName, "echo") == 0) {
       return resultJson.write(reinterpret_cast<const uint8_t*>(argsJson), strlen(argsJson));
+    }
+    if (strncmp(toolName, "img", 3) == 0) {
+      const char* meta = "{\"imageId\":\"img-1\",\"bytes\":3}";
+      Status w = resultJson.write(reinterpret_cast<const uint8_t*>(meta), strlen(meta));
+      if (!w.ok()) return w;
+      if (att) {
+        strcpy(att->uri, "http://192.0.2.1/api/v1/images/img-1");
+        strcpy(att->name, "img-1");
+        strcpy(att->mime, "image/jpeg");
+        // "img" writes the base64 payload too; "imglink" stays link-only.
+        if (att->data && strcmp(toolName, "img") == 0) {
+          att->data->write(reinterpret_cast<const uint8_t*>("aGk="), 4);
+          att->hasData = true;
+        }
+      }
+      return Status::Ok();
     }
     return Status::Fail(Err::SdUnavailable, "no card");
   }
@@ -62,7 +79,9 @@ struct Env {
   JsonDoc* doc = &g_doc;
   char args[2048];
   char toolOut[8192];
-  McpServer srv{tools, McpBuffers{doc, args, sizeof(args), toolOut, sizeof(toolOut)}};
+  char attach[8192];
+  McpServer srv{tools, McpBuffers{doc, args, sizeof(args), toolOut,
+                                  sizeof(toolOut), attach, sizeof(attach)}};
 };
 
 // handle -> parse envelope -> root (static doc; don't use alongside srv).
@@ -122,7 +141,7 @@ int main() {
     Env e;
     const JsonValue* r = handle(e, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/list\"}", out, sizeof(out), rsp);
     const JsonValue* ts = jsonMember(jsonMember(r, "result"), "tools");
-    CHECK(ts && jsonLen(ts) == 2);
+    CHECK(ts && jsonLen(ts) == 4);
     const JsonValue* t0 = jsonAt(ts, 0);
     CHECK(jsonStrEq(jsonMember(t0, "name"), "echo"));
     CHECK(jsonStrEq(jsonMember(t0, "description"), "echo args"));
@@ -220,6 +239,56 @@ int main() {
         "{\"jsonrpc\":\"2.0\",\"id\":11,\"method\":\"tools/call\",\"params\":{\"name\":\"echo\",\"arguments\":{}}}",
         out, sizeof(out), rsp);
     CHECK(r && errCode(r) == -32603);
+  }
+  {
+    // attachment: content = text + image (base64, no escaping) + resource_link
+    Env e;
+    const JsonValue* r = handle(e,
+        "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"tools/call\",\"params\":{\"name\":\"img\",\"arguments\":{}}}",
+        out, sizeof(out), rsp);
+    CHECK(r);
+    const JsonValue* res = jsonMember(r, "result");
+    const JsonValue* cont = jsonMember(res, "content");
+    CHECK(cont && jsonLen(cont) == 3);
+    const JsonValue* c1 = jsonAt(cont, 1);
+    CHECK(jsonStrEq(jsonMember(c1, "type"), "image"));
+    CHECK(jsonStrEq(jsonMember(c1, "data"), "aGk="));
+    CHECK(jsonStrEq(jsonMember(c1, "mimeType"), "image/jpeg"));
+    const JsonValue* c2 = jsonAt(cont, 2);
+    CHECK(jsonStrEq(jsonMember(c2, "type"), "resource_link"));
+    CHECK(jsonStrEq(jsonMember(c2, "uri"), "http://192.0.2.1/api/v1/images/img-1"));
+    CHECK(jsonStrEq(jsonMember(c2, "name"), "img-1"));
+    CHECK(jsonStrEq(jsonMember(c2, "mimeType"), "image/jpeg"));
+  }
+  {
+    // link-only attachment (payload skipped/failed): text + resource_link
+    Env e;
+    const JsonValue* r = handle(e,
+        "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"imglink\",\"arguments\":{}}}",
+        out, sizeof(out), rsp);
+    CHECK(r);
+    const JsonValue* cont = jsonMember(jsonMember(r, "result"), "content");
+    CHECK(cont && jsonLen(cont) == 2);
+    const JsonValue* c1 = jsonAt(cont, 1);
+    CHECK(jsonStrEq(jsonMember(c1, "type"), "resource_link"));
+    CHECK(jsonStrEq(jsonMember(c1, "uri"), "http://192.0.2.1/api/v1/images/img-1"));
+  }
+  {
+    // b_.attach == nullptr: callee can't stream inline -> link-only still.
+    MockTools tools;
+    JsonDoc* doc = &g_doc;
+    char a2[256], t2[1024];
+    McpServer srv{tools, McpBuffers{doc, a2, sizeof(a2), t2, sizeof(t2),
+                                  nullptr, 0}};
+    const char* body =
+        "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"img\",\"arguments\":{}}}";
+    StrSink s(out, sizeof(out));
+    CHECK(srv.handle(body, strlen(body), s));
+    static JsonDoc d;
+    CHECK(d.parse(out, s.len()) == JsonErr::Ok);
+    const JsonValue* cont = jsonMember(jsonMember(d.root(), "result"), "content");
+    CHECK(cont && jsonLen(cont) == 2);
+    CHECK(jsonStrEq(jsonMember(jsonAt(cont, 1), "type"), "resource_link"));
   }
 
   // --- unknown method / notification / response / error -------------------------
