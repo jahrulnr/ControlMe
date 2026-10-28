@@ -1,23 +1,23 @@
-# 05 — Peta Pin & Perangkat Keras ESP32-CAM
+# 05 — ESP32-CAM Pin & Hardware Map
 
-> Peta pin kamera dan SD dicocokkan dengan **referensi Espressif LOKAL** yang sudah dibaca (bukan verifikasi online, bukan hasil uji unit). Unit persis di foto belum diverifikasi revisi/clone-nya.
+> The camera and SD pin map was checked against the **LOCAL Espressif reference** already read (not an online verification, not a unit test result). The exact unit in the photo has not been verified for revision/clone status.
 
-## Modul (dari foto pengguna)
+## Modules (from the user's photo)
 
-- **ESP32-CAM klasik gaya AI-Thinker** + **base programmer USB** (kemungkinan **ESP32-CAM-MB**) — revisi/clone persis tidak bisa dibuktikan dari foto.
-- Diasumsikan nominal **4 MB flash + PSRAM onboard** (umumnya 4 MB; kapasitas persis wajib dibaca dari boot flash info & PSRAM init — jangan klaim ada/tidak sebelum dibaca).
-- Kamera **OV2640 onboard** lewat kabel FFC + rail daya dari regulator papan — koneksi fixed pabrik, **tidak ada adapter DVP eksternal**.
-- Slot **microSD onboard** — koneksi fixed pabrik ke peripheral SDMMC.
-- Port USB pada base programmer adalah **UART bridge** (bukan USB native ESP32) — **GPIO1 (TX0) dan GPIO3 (RX0) direservasi** untuk programming/console.
+- **Classic AI-Thinker-style ESP32-CAM** + **USB programmer base** (likely **ESP32-CAM-MB**) — the exact revision/clone cannot be proven from the photo.
+- Assumed nominal **4 MB flash + onboard PSRAM** (typically 4 MB; the exact capacity must be read from the boot flash info & PSRAM init — don't claim present/absent before reading).
+- **Onboard OV2640** camera via FFC cable + power rail from the board regulator — factory-fixed connection, **no external DVP adapter**.
+- **Onboard microSD slot** — factory-fixed connection to the SDMMC peripheral.
+- The USB port on the programmer base is a **UART bridge** (not native ESP32 USB) — **GPIO1 (TX0) and GPIO3 (RX0) are reserved** for programming/console.
 
-## Pin Kamera Onboard (referensi koneksi fixed — bukan usulan rewire)
+## Onboard Camera Pins (fixed-connection reference — not a rewire proposal)
 
-Pemetaan varian `CAMERA_MODEL_AI_THINKER` dari contoh resmi Espressif:
+`CAMERA_MODEL_AI_THINKER` mapping from the official Espressif example:
 
-| Sinyal | GPIO |
+| Signal | GPIO |
 |--------|------|
 | PWDN | 32 |
-| RESET | -1 (tidak ada GPIO khusus reset) |
+| RESET | -1 (no dedicated reset GPIO) |
 | XCLK | 0 |
 | SCCB_SDA | 26 |
 | SCCB_SCL | 27 |
@@ -33,80 +33,80 @@ Pemetaan varian `CAMERA_MODEL_AI_THINKER` dari contoh resmi Espressif:
 | HREF | 23 |
 | PCLK | 22 |
 
-- Ini adalah **koneksi onboard**, bukan pin header yang bisa dipakai ulang — jangan dianggap "pin bebas".
-- XCLK: LEDC **timer0 channel0, 20 MHz** (dari contoh lokal; mode LEDC eksplisit — ESP32 klasik punya mode high-speed **dan** low-speed, jangan asumsikan LS-only).
-- LED flash onboard = **GPIO4**; LED status = **GPIO33** (kandidat, tergantung varian board — bukan pin header bebas).
+- These are **onboard connections**, not reusable header pins — don't treat them as "free pins".
+- XCLK: LEDC **timer0 channel0, 20 MHz** (from the local example; explicit LEDC mode — the classic ESP32 has high-speed **and** low-speed modes, don't assume LS-only).
+- Onboard flash LED = **GPIO4**; status LED = **GPIO33** (candidate, depends on the board variant — not a free header pin).
 
-## Kartu SD Onboard (SDMMC slot 1, lebar 1-bit)
+## Onboard SD Card (SDMMC slot 1, 1-bit width)
 
-| Sinyal | GPIO | Catatan |
-|--------|------|---------|
+| Signal | GPIO | Note |
+|--------|------|------|
 | CLK | 14 | fixed slot 1 |
 | CMD | 15 | fixed slot 1 |
-| DAT0 | 2 | satu-satunya jalur data di mode 1-bit |
-| DAT1 | 4 | terhubung fisik; **tidak dipakai** untuk data di mode 1-bit |
-| DAT2 | 12 | terhubung fisik; tidak dipakai untuk data; GPIO12 juga pin strapping |
-| DAT3 | 13 | terhubung fisik; **wajib HIGH saat inisialisasi kartu** — bila LOW, kartu bisa masuk mode SPI |
+| DAT0 | 2 | the only data line in 1-bit mode |
+| DAT1 | 4 | physically wired; **unused** for data in 1-bit mode |
+| DAT2 | 12 | physically wired; unused for data; GPIO12 is also a strapping pin |
+| DAT3 | 13 | physically wired; **must be HIGH during card init** — if LOW, the card may enter SPI mode |
 
-- Mode **width=1 dikonfigurasi eksplisit** di driver; mode 4-bit akan menyita pin yang dipakai bersama servo/LED — bukan baseline.
-- GPIO2 adalah pin **strapping** (harus LOW saat masuk download) — pull-up SD pada lini ini bisa mengganggu flashing.
-- README SD_MMC lokal mensyaratkan **pull-up ~10 kΩ pada DAT3**; jangan menambah pull-up baru di GPIO12. **Pull-up yang terpasang di board wajib diinspeksi** — jangan asumsikan semua ada.
-- ESP32 klasik tidak bisa memetakan ulang pin SDMMC bebas seperti seri lebih baru.
+- **width=1 is configured explicitly** in the driver; 4-bit mode would seize pins shared with the servo/LED — not baseline.
+- GPIO2 is a **strapping** pin (must be LOW to enter download) — an SD pull-up on this line can interfere with flashing.
+- The local SD_MMC README requires a **~10 kΩ pull-up on DAT3**; don't add a new pull-up on GPIO12. **Pull-ups fitted on the board must be inspected** — don't assume they're all present.
+- The classic ESP32 can't remap SDMMC pins freely like the newer series.
 
-## Servo (conditional — berbagi pin dengan kartu SD)
+## Servo (conditional — shares pins with the SD card)
 
-| Peran | GPIO | Status |
-|-------|------|--------|
-| Servo PAN (utama) | 13 | **kandidat, conditional** — pin ini juga SD DAT3; lihat koordinasi di bawah |
-| Servo TILT (opsional) | 12 | **conditional** — pin strapping VDD_SDIO; pull eksternal HIGH saat reset bisa memilih tegangan flash salah → boot gagal. Wajib lulus uji power-on/reset/brown-out dengan servo terpasang |
+| Role | GPIO | Status |
+|------|------|--------|
+| Servo PAN (primary) | 13 | **candidate, conditional** — this pin is also SD DAT3; see coordination below |
+| Servo TILT (optional) | 12 | **conditional** — VDD_SDIO strapping pin; an external HIGH pull during reset can select the wrong flash voltage → boot failure. Must pass power-on/reset/brown-out testing with the servo attached |
 
-- **Tidak ada jaminan dua servo** untuk semua unit — baseline satu servo pan; tilt hanya setelah kualifikasi listrik. `servo_set` untuk channel yang tidak terkonfigurasi → `NOT_SUPPORTED`.
-- GPIO13 bukan "pin bebas" — tetap terhubung ke DAT3 kartu.
-- Saat PWM servo dimatikan untuk koordinasi SD, GPIO13 di-drive **HIGH**; tidak ada PWM valid → posisi servo mungkin tidak tertahan (bukan jaminan safety fisik).
+- **No two-servo guarantee** for all units — baseline is one pan servo; tilt only after electrical qualification. `servo_set` for an unconfigured channel → `NOT_SUPPORTED`.
+- GPIO13 is not a "free pin" — it stays wired to the card's DAT3.
+- When servo PWM is stopped for SD coordination, GPIO13 is driven **HIGH**; with no valid PWM the servo position may not hold (not a physical-safety guarantee).
 
-## Koordinasi SD ↔ Servo (async, di DeviceActions — BUKAN blocking antar-owner)
+## SD ↔ Servo Coordination (async, in DeviceActions — NOT blocking between owners)
 
-Urutan pada **boot awal (sebelum PWM aktif)** dan **setiap re-init/remount SD**:
+Sequence on **first boot (before PWM is active)** and on **every SD re-init/remount**:
 
-1. Suspend admission `servo_set` untuk channel 13.
-2. Minta Servo owner mematikan PWM dan drive GPIO13 **HIGH**; tunggu ACK **tanpa memegang lock owner apa pun**.
-3. Minta Storage owner mount SD slot1 width1.
-4. Sukses → restore PWM ke desired terakhir + buka admission.
-5. Gagal → `TIMEOUT`/`SD_UNAVAILABLE` eksplisit; GPIO13 **tetap HIGH** sampai pemulihan/reconfigure yang dikontrol pengguna — tidak resume PWM buta; `servo_set` → `RESOURCE_BUSY` selama handoff/pemulihan belum selesai.
-6. Request servo13 yang masuk selama handoff → `RESOURCE_BUSY` (bukan menunggu selamanya).
-7. Deadline bounded di tiap langkah; Storage owner tidak pernah menunggu Servo owner dan sebaliknya (tanpa deadlock).
-8. Reboot → remount selesai **sebelum** PWM aktif. **Task mount awal wajib mendahului task PWM13** — termasuk saat SD tidak terpasang; mode tanpa-SD permanen adalah pilihan konfigurasi manual terpisah (pertanyaan review), bukan otomatis.
+1. Suspend `servo_set` admission for channel 13.
+2. Ask the Servo owner to stop PWM and drive GPIO13 **HIGH**; wait for the ACK **without holding any owner lock**.
+3. Ask the Storage owner to mount SD slot1 width1.
+4. Success → restore PWM to the last desired + reopen admission.
+5. Failure → explicit `TIMEOUT`/`SD_UNAVAILABLE`; GPIO13 **stays HIGH** until recovery/user-controlled reconfigure — no blind PWM resume; `servo_set` → `RESOURCE_BUSY` while the handoff/recovery is unfinished.
+6. Servo13 requests arriving during the handoff → `RESOURCE_BUSY` (not waiting forever).
+7. Bounded deadline at each step; the Storage owner never waits on the Servo owner and vice versa (no deadlock).
+8. Reboot → remount completes **before** PWM goes active. **The initial mount task must precede the PWM13 task** — including when no SD is fitted; a permanent no-SD mode is a separate manual configuration choice (review question), not automatic.
 
-## Alternatif ekspander (OPSIONAL — trade-off review, bukan baseline)
+## Expander alternative (OPTIONAL — review trade-off, not baseline)
 
-PCA9685 (I2C PWM, 16 channel) kandidat untuk dua servo: **SDA=3, SCL=1** — hanya valid bila base programmer **dilepas atau diisolasi elektrik** dari kedua pin UART saat run, console serial dimatikan setelah takeover, aktivitas TX saat boot dikualifikasi, dan output PWM disabled selama init. Bukan plug-and-play, bukan GPIO gratis; tetap tabel opsi dengan batasannya.
+PCA9685 (I2C PWM, 16 channels) is a candidate for two servos: **SDA=3, SCL=1** — valid only if the programmer base is **removed or electrically isolated** from both UART pins at run time, the serial console is off after takeover, TX activity at boot is qualified, and PWM outputs are disabled during init. Not plug-and-play, not free GPIOs; it stays an option table with its constraints.
 
-## Pin yang Direservasi (jangan dipakai)
+## Reserved Pins (do not use)
 
-| GPIO | Alasan |
+| GPIO | Reason |
 |------|--------|
-| 1, 3 | UART0 TX/RX — programming/console via base USB (kecuali rute ekspander di atas dikualifikasi) |
-| 6–11 | flash SPI internal |
-| 16, 17 | PSRAM (bila terpasang) |
-| 0 | XCLK kamera + strap download — jangan tambah aktuator |
-| 2 | SD DAT0 + strap download |
-| 4 | LED flash + SD DAT1 — **jangan PWM servo** |
-| 12 | SD DAT2 + strap VDD_SDIO (kandidat tilt conditional) |
-| 13 | SD DAT3 (kandidat pan conditional) |
+| 1, 3 | UART0 TX/RX — programming/console via the USB base (unless the expander route above is qualified) |
+| 6–11 | internal SPI flash |
+| 16, 17 | PSRAM (when fitted) |
+| 0 | camera XCLK + download strap — don't add actuators |
+| 2 | SD DAT0 + download strap |
+| 4 | flash LED + SD DAT1 — **no servo PWM** |
+| 12 | SD DAT2 + VDD_SDIO strap (conditional tilt candidate) |
+| 13 | SD DAT3 (conditional pan candidate) |
 | 14, 15 | SD CLK/CMD |
-| 34–39 | input-only + jalur data kamera — bukan output bebas |
+| 34–39 | input-only + camera data lines — not free outputs |
 
-## Sumber Referensi (lokal, sudah dibaca) & Checklist Resmi (belum diambil)
+## Reference Sources (local, already read) & Official Checklist (not yet fetched)
 
-**Sumber lokal yang diinspeksi (provenance: LOKAL, bukan online):**
+**Local sources inspected (provenance: LOCAL, not online):**
 
 - `~/.platformio/packages/framework-arduinoespressif32/package.json` — Arduino core 3.3.5.
-- `~/.platformio/packages/framework-arduinoespressif32/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h` (baris ~160–180) — pin AI_THINKER.
-- `~/.platformio/packages/framework-arduinoespressif32/libraries/SD_MMC/README.md` — pemetaan SD + catatan pull-up DAT3/strap.
-- `~/.platformio/packages/framework-arduinoespressif32-libs/esp32/include/soc/esp32/include/soc/sdmmc_pins.h` — pin fixed slot1.
-- `~/.platformio/platforms/espressif32/boards/esp32cam.json` — MCU esp32, flash 4 MB, flag BOARD_HAS_PSRAM (**bukan** bukti kapasitas aktual).
+- `~/.platformio/packages/framework-arduinoespressif32/libraries/ESP32/examples/Camera/CameraWebServer/camera_pins.h` (lines ~160–180) — AI_THINKER pins.
+- `~/.platformio/packages/framework-arduinoespressif32/libraries/SD_MMC/README.md` — SD mapping + DAT3 pull-up/strap notes.
+- `~/.platformio/packages/framework-arduinoespressif32-libs/esp32/include/soc/esp32/include/soc/sdmmc_pins.h` — fixed slot1 pins.
+- `~/.platformio/platforms/espressif32/boards/esp32cam.json` — esp32 MCU, 4 MB flash, BOARD_HAS_PSRAM flag (**not** proof of actual capacity).
 
-**Referensi resmi terkait (dicatat, belum di-fetch/diverifikasi online):**
+**Related official references (noted, not yet fetched/verified online):**
 
 - https://github.com/espressif/arduino-esp32/tree/master/libraries/ESP32/examples/Camera/CameraWebServer
 - https://github.com/espressif/arduino-esp32/tree/master/libraries/SD_MMC
@@ -115,4 +115,4 @@ PCA9685 (I2C PWM, 16 channel) kandidat untuk dua servo: **SDA=3, SCL=1** — han
 - https://www.espressif.com/sites/default/files/documentation/esp32_datasheet_en.pdf
 - https://wiki.ai-thinker.com/esp32-cam
 
-Item wajib cek sebelum pin final: strap VDD_SDIO (GPIO12), perilaku GPIO2 saat download, keberadaan pull-up DAT3 di unit, ukuran PSRAM aktual, mode LEDC HS/LS yang dipilih.
+Items to check before final pins: VDD_SDIO strap (GPIO12), GPIO2 behavior during download, presence of the DAT3 pull-up on the unit, actual PSRAM size, the chosen LEDC HS/LS mode.

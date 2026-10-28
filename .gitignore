@@ -1,0 +1,4 @@
+.pio/
+.vscode/
+include/secret.h
+compile_commands.json

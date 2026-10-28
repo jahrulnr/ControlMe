@@ -6,7 +6,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { createBoardModel } from './board-model.js';
 import { COMPONENTS, getVisibleComponents, resolveSelection } from './board-components.js';
 
-const WIRE_LAYERS = [['5V', 'Daya 5V (ochre)'], ['GND', 'GND (abu)'], ['signal', 'Sinyal (teal)'], ['onboard', 'Onboard (tembaga)']];
+const WIRE_LAYERS = [['5V', '5V power (ochre)'], ['GND', 'GND (gray)'], ['signal', 'Signal (teal)'], ['onboard', 'Onboard (copper)']];
 const ISO_POS = [9, 10, 12], ISO_TGT = [0, 0.7, 0];
 
 export function initBoardViewer(root) {
@@ -32,7 +32,7 @@ export function initBoardViewer(root) {
   const stage = el('div', 'bv-stage');
   const toolbar = el('div', 'bv-toolbar');
   const canvasBox = el('div', 'bv-canvas');
-  const status = el('p', 'bv-status'); status.setAttribute('role', 'status'); status.textContent = 'Menyiapkan visualisasi 3D…';
+  const status = el('p', 'bv-status'); status.setAttribute('role', 'status'); status.textContent = 'Setting up the 3D visualization…';
   const panel = el('aside', 'bv-panel');
   const listWrap = el('div', 'bv-list');
   const inspector = el('div', 'bv-inspector');
@@ -43,16 +43,16 @@ export function initBoardViewer(root) {
   root.appendChild(wrap);
 
   // Toolbar: camera views + explode + layer + option toggles
-  const views = [['Isometri', 'iso'], ['Atas', 'top'], ['Bawah', 'bottom'], ['Zoom +', 'zin'], ['Zoom −', 'zout'], ['Reset', 'reset']];
+  const views = [['Isometric', 'iso'], ['Top', 'top'], ['Bottom', 'bottom'], ['Zoom +', 'zin'], ['Zoom −', 'zout'], ['Reset', 'reset']];
   for (const [lbl, v] of views) {
     const b = el('button', 'bv-btn', lbl); b.type = 'button'; b.dataset.view = v;
     b.addEventListener('click', () => applyView(v));
     toolbar.appendChild(b);
   }
   const explWrap = el('label', 'bv-slider');
-  explWrap.append(el('span', null, 'Pisahkan komponen '));
+  explWrap.append(el('span', null, 'Explode components '));
   const expl = document.createElement('input');
-  expl.type = 'range'; expl.min = 0; expl.max = 100; expl.value = 0; expl.setAttribute('aria-label', 'Tingkat pemisahan komponen');
+  expl.type = 'range'; expl.min = 0; expl.max = 100; expl.value = 0; expl.setAttribute('aria-label', 'Component explode amount');
   explWrap.appendChild(expl);
   const layersBox = el('div', 'bv-layers');
   for (const [kind, lbl] of WIRE_LAYERS) {
@@ -62,7 +62,7 @@ export function initBoardViewer(root) {
     lb.append(cb, document.createTextNode(' ' + lbl)); layersBox.appendChild(lb);
   }
   const optsBox = el('div', 'bv-layers');
-  const optDefs = [['tilt', 'Servo tilt (opsional)'], ['expander', 'PCA9685 (opsional)']];
+  const optDefs = [['tilt', 'Tilt servo (optional)'], ['expander', 'PCA9685 (optional)']];
   for (const [key, lbl] of optDefs) {
     const lb = el('label', 'bv-check');
     const cb = document.createElement('input'); cb.type = 'checkbox'; cb.dataset.option = key;
@@ -78,12 +78,12 @@ export function initBoardViewer(root) {
   const inspPins = el('ul', 'bv-insp-pins');
   const inspNotes = el('p', 'bv-insp-notes');
   const inspLink = el('p', 'bv-insp-link');
-  inspLink.textContent = 'Detail pin: ';
+  inspLink.textContent = 'Pin details: ';
   const a05 = el('a', null, '05-hardware-pins.md'); a05.href = '05-hardware-pins.md';
   const a06 = el('a', null, '06-board-design.md'); a06.href = '06-board-design.md';
   inspLink.append(a05, document.createTextNode(' · '), a06);
   inspector.append(inspTitle, inspType, inspRole, inspPins, inspNotes, inspLink);
-  listWrap.appendChild(el('h4', 'bv-list-h', 'Pilih komponen'));
+  listWrap.appendChild(el('h4', 'bv-list-h', 'Select a component'));
   const ul = el('ul', 'bv-components');
   listWrap.appendChild(ul);
 
@@ -104,7 +104,7 @@ export function initBoardViewer(root) {
     root.dataset.selectedComponent = state.selected;
     const c = COMPONENTS.find((x) => x.id === state.selected);
     inspTitle.textContent = c.label;
-    inspType.textContent = `Tipe: ${c.type} · ${c.voltage || ''}`;
+    inspType.textContent = `Type: ${c.type} · ${c.voltage || ''}`;
     inspRole.textContent = c.role;
     inspPins.textContent = '';
     for (const p of c.pins) {
@@ -209,12 +209,12 @@ export function initBoardViewer(root) {
     failed = true;
     root.dataset.viewerState = 'error';
     status.textContent = msg + ' ';
-    const btn = el('button', 'bv-btn', 'Muat ulang'); btn.type = 'button';
+    const btn = el('button', 'bv-btn', 'Reload'); btn.type = 'button';
     btn.addEventListener('click', () => location.reload());
     status.appendChild(btn);
     document.querySelector('details.diagram2d')?.setAttribute('open', '');
   }
-  const onLost = (e) => { e.preventDefault(); contextLost = true; fail('Konteks WebGL hilang — diagram 2D tetap tersedia.'); };
+  const onLost = (e) => { e.preventDefault(); contextLost = true; fail('WebGL context lost — the 2D diagram stays available.'); };
   cvs.addEventListener('webglcontextlost', onLost);
 
   // bfcache-safe: dispose only on a real unload, not a persisted pagehide.
@@ -261,6 +261,6 @@ export function initBoardViewer(root) {
   renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
   fitView();
   root.dataset.viewerState = 'ready';
-  status.textContent = 'Seret untuk memutar · scroll/pinch untuk zoom · klik kanan geser · klik komponen untuk detail';
+  status.textContent = 'Drag to orbit · scroll/pinch to zoom · right-click to pan · click a component for details';
   return { cleanup: teardown, setSelected, screenPoint, snapshot, fitView };
 }
