@@ -7,19 +7,14 @@ physical hardware available to external AI agents through MCP (Model Context
 Protocol). The AI model and reasoning run outside the board. The agent calls
 tools, and the firmware executes them on the device.
 
-```text
-external AI agent
-       |
-       v
-  MCP (HTTP :81)
-       |
-       v
- ControlMe / ESP32-CAM
-       |
-       +--> JPEG camera
-       +--> pan/tilt servos
-       +--> microSD
-       +--> status, logs, reboot
+```mermaid
+flowchart TB
+    Agent["External AI agent"] --> MCP["MCP (HTTP :81)"]
+    MCP --> Device["ControlMe / ESP32-CAM"]
+    Device --> Camera["JPEG camera"]
+    Device --> Servos["Pan/tilt servos"]
+    Device --> SD["microSD"]
+    Device --> Status["Status, logs, reboot"]
 ```
 
 ## What You Can Do
