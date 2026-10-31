@@ -1,12 +1,16 @@
 #pragma once
 // Camera port — owner of the OV2640 framebuffer + PSRAM staging pool.
-// Staging: max 2 objects x 96 KiB (cfg), 60 s TTL only for unreferenced ones.
+// Staging: max 2 objects, growing in PSRAM as needed, 60 s TTL for unreferenced ones.
 // imageId lives in RAM for this boot only; persistence = save to SD.
 #include "common/error.h"
 #include "common/config.h"
 #include "ports/writer.h"
 
 namespace controlme {
+
+enum class CameraSize : uint8_t {
+  QQVGA, Square240, QVGA, CIF, HVGA, VGA, SVGA, XGA, HD, SXGA, UXGA
+};
 
 struct ImageMeta {
   char imageId[cfg::kIdCap] = {};
@@ -22,8 +26,12 @@ class ICamera {
   virtual ~ICamera() = default;
 
   virtual bool isReady() = 0;
-  // Capture -> staging pool; full pool -> ResourceBusy; frame > budget -> ImageTooLarge.
-  virtual Status capture(ImageMeta& out) = 0;
+  // A null requested size reads the active size; changing it reconfigures
+  // the camera in its owner task. The setting resets at reboot.
+  virtual Status configure(const CameraSize* requested, CameraSize& active) = 0;
+  // Capture replaces the oldest unpinned staged image when full. If all
+  // slots are pinned -> ResourceBusy; frame > budget -> ImageTooLarge.
+  virtual Status capture(ImageMeta& out, bool flash = false) = 0;
   // Pin/unpin ref (run attachments etc.); pinned permanently past TTL.
   virtual Status pin(const char* imageId) = 0;
   virtual Status release(const char* imageId) = 0;

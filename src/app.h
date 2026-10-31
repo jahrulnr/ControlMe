@@ -20,6 +20,7 @@
 #include "ports/runner.h"
 #include "ports/reboot.h"
 #include "ports/devlog.h"
+#include "ports/contract.h"
 #include "ports/web.h"
 #include "transport/http_server.h"
 #include "transport/mcp_transport.h"
@@ -43,6 +44,7 @@ struct App {
   IWebSearch* webSearch = nullptr;
   IWebFetch* webFetch = nullptr;
   IDeviceLog* logs = nullptr;            // DeviceLog (filelog) — persistent LittleFS log
+  IContractStore* contracts = nullptr;    // guidance stored in LittleFS
   volatile bool admissionOpen = true;    // false once shutdown/reboot starts
 
   transport::HttpServer http;     // :80 — REST status/capabilities/logs
@@ -54,7 +56,7 @@ struct App {
   // critical section; read atomically (32-bit) by the status handler.
   volatile uint32_t lastEventSequence = 0;
 
-  bool littleFsMounted = false;   // used by DeviceLog; failed mount -> logs nullptr
+  bool littleFsMounted = false;   // shared by DeviceLog and contracts
   bool wifiConnected = false;     // SD status read live: storage->isMounted()
 
   // Capabilities: only features ACTUALLY registered (docs/07 — honest,

@@ -216,6 +216,7 @@ void controlme_register_storage(controlme::App&);
 void controlme_register_servo(controlme::App&);
 void controlme_register_camera(controlme::App&);
 void controlme_register_log(controlme::App&);
+void controlme_register_contract(controlme::App&);
 void controlme_register_mcp(controlme::App&);
 void controlme_register_supervisor(controlme::App&);
 
@@ -245,6 +246,7 @@ void setup() {
   g_app.littleFsMounted = LittleFS.begin(true);  // formatOnFail
   ESP_LOGI(kTag, "boot: littlefs %s",
            g_app.littleFsMounted ? "ok" : "failed");
+  controlme_register_contract(g_app);
   // DeviceLog as early as possible — rotate current->prev then start
   // draining the capture ring (the previous boot's log already waits in the
   // ring).

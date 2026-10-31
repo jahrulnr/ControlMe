@@ -4,12 +4,12 @@
 // blocking-deadline OwnerTask<CameraReq> facade — no bypass, no synchronous
 // cross-task callbacks.
 //
-// Staging: 2 slots x 96 KiB (cfg::kStagingPoolSize x kStagingMaxBytes),
-// heap_caps_malloc MALLOC_CAP_SPIRAM with DRAM fallback (honestly logged).
+// Staging: two 96 KiB initial slots, each growing to 384 KiB in PSRAM.
+// Initial allocation may fall back to DRAM (honestly logged).
 // The 60 s TTL (cfg::kImageTtlMs) applies ONLY to unreferenced images and is
-// swept LAZY on every op — no silent eviction when the pool is full (capture
-// -> explicit RESOURCE_BUSY, docs/03). imageId "img-N" lives in RAM for this
-// boot only; persistence = save to SD.
+// swept LAZY on every op. When full, capture replaces the oldest unpinned
+// image; pinned images remain available to their readers. imageId "img-N"
+// lives in RAM for this boot only; persistence = save to SD.
 #include "common/config.h"
 #include "common/error.h"
 #include "ports/camera.h"
@@ -27,7 +27,8 @@ namespace controlme {
 
 enum class CameraOp : uint8_t {
   Init = 0,  // init esp_camera driver + detect psram/flash + allocate staging
-  Capture,   // take 1 JPEG frame -> free staging slot
+  Configure, // get or change camera size in the owner task
+  Capture,   // take 1 JPEG frame -> free or oldest unpinned staging slot
   Pin,       // refCount++ — pinned permanently past TTL
   Release,   // refCount--; reaching 0 -> lastRefMs=now (TTL starts running)
   Discard,   // free the slot immediately — one-shot consumer (HTTP snapshot)
@@ -49,6 +50,9 @@ enum class CameraOp : uint8_t {
 struct CameraReq {
   OwnerCtrl ctrl;
   CameraOp op = CameraOp::Tick;
+  bool setSize = false;
+  bool flash = false;
+  CameraSize size = CameraSize::QVGA;
   char imageId[cfg::kIdCap] = {};
   uint32_t offset = 0;                  // Read: byte offset into the image
   ImageMeta meta{};                     // output: Capture/Stat/Read
@@ -67,7 +71,8 @@ class CameraOwner : public ICamera, public OwnerTask<CameraReq> {
   bool isReady() override { return ready_; }
   Status initHw();           // Init op (one-time setup)
   Status tick();             // Tick op
-  Status capture(ImageMeta& out) override;
+  Status capture(ImageMeta& out, bool flash = false) override;
+  Status configure(const CameraSize* requested, CameraSize& active) override;
   Status pin(const char* imageId) override;
   Status release(const char* imageId) override;
   Status discard(const char* imageId) override;
@@ -89,16 +94,20 @@ class CameraOwner : public ICamera, public OwnerTask<CameraReq> {
 
  private:
   struct StagingSlot {
-    uint8_t* buf = nullptr;          // kStagingMaxBytes, PSRAM when available
+    uint8_t* buf = nullptr;          // PSRAM when available
+    size_t capacity = 0;
     ImageMeta meta{};
     uint8_t refCount = 0;
     uint32_t lastRefMs = 0;          // last reference / capture / read chunk
+    uint64_t captureOrder = 0;       // capture age, unaffected by reads/releases
     bool occupied = false;           // holding an image (valid imageId)
   };
 
   static void dispatchThunk(CameraReq& r, void* ctx);
   void handle(CameraReq& r);         // runs IN the owner task
   void handleInit(CameraReq& r);
+  void handleConfigure(CameraReq& r);
+  Status initDriver(CameraSize size);
   void handleCapture(CameraReq& r);
   void handlePin(CameraReq& r);
   void handleRelease(CameraReq& r);
@@ -112,14 +121,17 @@ class CameraOwner : public ICamera, public OwnerTask<CameraReq> {
   void dropHeldFrame();
 
   StagingSlot* findById(const char* imageId);
-  StagingSlot* findFree();
+  StagingSlot* selectCaptureSlot();
   void sweepExpired(uint32_t nowMs);
   static uint32_t nowMs();
 
   StagingSlot slots_[cfg::kStagingPoolSize];
   volatile bool ready_ = false;      // written by the owner task, read cross-task
+  bool flashReady_ = false;         // GPIO4; owner task only
   uint8_t stagingAllocated_ = 0;
+  CameraSize size_ = CameraSize::QVGA;
   uint32_t imageSeq_ = 0;
+  uint64_t captureOrder_ = 0;
   uint32_t psramBytes_ = 0;
   uint32_t flashBytes_ = 0;
   void* heldFb_ = nullptr;           // camera_fb_t*, owner task only

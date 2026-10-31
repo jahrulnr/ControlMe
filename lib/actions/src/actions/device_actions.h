@@ -1,5 +1,5 @@
 #pragma once
-// DeviceActions — dispatcher for the 14 tools (docs/03 table) on top of the
+// DeviceActions — dispatcher for the wired tool catalog on top of the
 // App ports. Called blocking in the caller's task (ActionService /
 // AgentRunner worker); all device access goes through the owner facades
 // (queue+deadline), not locks — per docs/04 (one resource one owner, no

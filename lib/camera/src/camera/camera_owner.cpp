@@ -7,6 +7,8 @@
 #include "common/config.h"
 #include "common/event.h"   // copyStr
 #include "common/psram_alloc.h"
+#include "domain/image_staging.h"
+#include "domain/camera_format.h"
 #include <esp_camera.h>
 #include <esp_flash.h>
 #include <esp_heap_caps.h>
@@ -14,6 +16,7 @@
 #include <esp_memory_utils.h>
 #include <esp_psram.h>
 #include <esp_timer.h>
+#include <driver/gpio.h>
 
 namespace controlme {
 
@@ -22,6 +25,7 @@ static const char* kTag = "camera";
 // Facade timeout: every op is bounded work for the owner (Read copies one
 // kIoChunk — network send pacing lives in the caller's sink.write).
 static constexpr uint32_t kCtlTimeoutMs = cfg::kToolTimeoutMs;    // 10 s
+static constexpr gpio_num_t kFlashPin = GPIO_NUM_4;  // AI-Thinker flash LED; SD DAT1 unused in 1-bit mode
 
 // CameraReq ~4.2 KiB — two on a caller stack would overflow the facade
 // tasks (httpd 8 KiB, mcpw 6 KiB). All facades heap-allocate a pair
@@ -62,12 +66,25 @@ Status CameraOwner::tick() {
   return st;
 }
 
-Status CameraOwner::capture(ImageMeta& out) {
+Status CameraOwner::capture(ImageMeta& out, bool flash) {
   CameraReqPair* rp = allocCameraReq();
   if (!rp) return Status::Fail(Err::Internal, "alloc req");
   rp->in.op = CameraOp::Capture;
+  rp->in.flash = flash;
   Status st = call(rp->in, rp->o, kCtlTimeoutMs);
   if (st.ok()) out = rp->o.meta;
+  controlme::psramDelete(rp);
+  return st;
+}
+
+Status CameraOwner::configure(const CameraSize* requested, CameraSize& active) {
+  CameraReqPair* rp = allocCameraReq();
+  if (!rp) return Status::Fail(Err::Internal, "alloc req");
+  rp->in.op = CameraOp::Configure;
+  rp->in.setSize = requested != nullptr;
+  if (requested) rp->in.size = *requested;
+  Status st = call(rp->in, rp->o, kCtlTimeoutMs);
+  if (st.ok()) active = rp->o.size;
   controlme::psramDelete(rp);
   return st;
 }
@@ -200,6 +217,7 @@ void CameraOwner::handle(CameraReq& r) {
   sweepExpired(nowMs());
   switch (r.op) {
     case CameraOp::Init:    handleInit(r);    break;
+    case CameraOp::Configure: handleConfigure(r); break;
     case CameraOp::Capture: handleCapture(r); break;
     case CameraOp::Pin:     handlePin(r);     break;
     case CameraOp::Release: handleRelease(r); break;
@@ -214,17 +232,22 @@ void CameraOwner::handle(CameraReq& r) {
   }
 }
 
-void CameraOwner::handleInit(CameraReq& r) {
-  // Detect real hardware FIRST (bench docs requirement: "read flash info
-  // & PSRAM init") — recorded as-is, used by the feature fragment.
-  psramBytes_ = (uint32_t)esp_psram_get_size();
-  uint32_t flash = 0;
-  if (esp_flash_get_size(nullptr, &flash) == ESP_OK) {
-    flashBytes_ = flash;  // size from the image header; not a physical guarantee
+Status CameraOwner::initDriver(CameraSize size) {
+  framesize_t frameSize;
+  switch (size) {
+    case CameraSize::QQVGA: frameSize = FRAMESIZE_QQVGA; break;
+    case CameraSize::Square240: frameSize = FRAMESIZE_240X240; break;
+    case CameraSize::QVGA: frameSize = FRAMESIZE_QVGA; break;
+    case CameraSize::CIF: frameSize = FRAMESIZE_CIF; break;
+    case CameraSize::HVGA: frameSize = FRAMESIZE_HVGA; break;
+    case CameraSize::VGA: frameSize = FRAMESIZE_VGA; break;
+    case CameraSize::SVGA: frameSize = FRAMESIZE_SVGA; break;
+    case CameraSize::XGA: frameSize = FRAMESIZE_XGA; break;
+    case CameraSize::HD: frameSize = FRAMESIZE_HD; break;
+    case CameraSize::SXGA: frameSize = FRAMESIZE_SXGA; break;
+    case CameraSize::UXGA: frameSize = FRAMESIZE_UXGA; break;
+    default: return Status::Fail(Err::InvalidArgument, "unknown camera size");
   }
-  ESP_LOGI(kTag, "detected: psram=%lu bytes, flash=%lu bytes",
-           (unsigned long)psramBytes_, (unsigned long)flashBytes_);
-
   // Exact AI-Thinker pin map (docs/05). XCLK uses LEDC timer0 channel0
   // @20 MHz — the speed mode is chosen internally by the esp32-camera driver
   // (the config API doesn't expose the field).
@@ -249,7 +272,7 @@ void CameraOwner::handleInit(CameraReq& r) {
   cfg.ledc_timer = LEDC_TIMER_0;
   cfg.ledc_channel = LEDC_CHANNEL_0;
   cfg.pixel_format = PIXFORMAT_JPEG;
-  cfg.frame_size = FRAMESIZE_QVGA;   // 320x240 — docs/02 budget
+  cfg.frame_size = frameSize;
   cfg.jpeg_quality = 12;
   cfg.fb_count = 2;   // one held by the sender, one filled by the sensor
   cfg.grab_mode = CAMERA_GRAB_LATEST;
@@ -257,10 +280,36 @@ void CameraOwner::handleInit(CameraReq& r) {
 
   esp_err_t err = esp_camera_init(&cfg);
   if (err != ESP_OK) {
+    ESP_LOGE(kTag, "esp_camera_init failed: 0x%x", (unsigned)err);
+    return Status::Fail(Err::Internal, "camera init failed");
+  }
+  sensor_t* sensor = esp_camera_sensor_get();
+  if (!sensor || sensor->status.framesize != frameSize) {
+    esp_camera_deinit();
+    return Status::Fail(Err::NotSupported, "sensor does not support size");
+  }
+  return Status::Ok();
+}
+
+void CameraOwner::handleInit(CameraReq& r) {
+  // Detect real hardware FIRST (bench docs requirement: "read flash info
+  // & PSRAM init") — recorded as-is, used by the feature fragment.
+  psramBytes_ = (uint32_t)esp_psram_get_size();
+  uint32_t flash = 0;
+  if (esp_flash_get_size(nullptr, &flash) == ESP_OK) {
+    flashBytes_ = flash;  // size from the image header; not a physical guarantee
+  }
+  ESP_LOGI(kTag, "detected: psram=%lu bytes, flash=%lu bytes",
+           (unsigned long)psramBytes_, (unsigned long)flashBytes_);
+
+  flashReady_ = gpio_set_direction(kFlashPin, GPIO_MODE_INPUT_OUTPUT) == ESP_OK &&
+                gpio_set_level(kFlashPin, 0) == ESP_OK;
+  if (!flashReady_) ESP_LOGW(kTag, "flash LED init failed");
+
+  Status init = initDriver(size_);
+  if (!init.ok()) {
     ready_ = false;
-    ESP_LOGE(kTag, "esp_camera_init failed: 0x%x — endpoints honestly fail",
-             (unsigned)err);
-    r.ctrl.status = Status::Fail(Err::Internal, "camera init failed");
+    r.ctrl.status = init;
     return;
   }
 
@@ -268,26 +317,65 @@ void CameraOwner::handleInit(CameraReq& r) {
   stagingAllocated_ = 0;
   for (uint8_t i = 0; i < cfg::kStagingPoolSize; ++i) {
     StagingSlot& s = slots_[i];
-    s.buf = (uint8_t*)heap_caps_malloc(cfg::kStagingMaxBytes, MALLOC_CAP_SPIRAM);
+    s.buf = (uint8_t*)heap_caps_malloc(cfg::kStagingInitialBytes, MALLOC_CAP_SPIRAM);
     if (s.buf) {
       ESP_LOGI(kTag, "staging slot %u: %u bytes PSRAM", (unsigned)i,
-               (unsigned)cfg::kStagingMaxBytes);
+               (unsigned)cfg::kStagingInitialBytes);
     } else {
-      s.buf = (uint8_t*)heap_caps_malloc(cfg::kStagingMaxBytes,
+      s.buf = (uint8_t*)heap_caps_malloc(cfg::kStagingInitialBytes,
                                          MALLOC_CAP_INTERNAL |
                                              MALLOC_CAP_8BIT);
       if (s.buf) {
         ESP_LOGW(kTag, "staging slot %u: DRAM fallback %u bytes (PSRAM insufficient/absent)",
-                 (unsigned)i, (unsigned)cfg::kStagingMaxBytes);
+                 (unsigned)i, (unsigned)cfg::kStagingInitialBytes);
       } else {
         ESP_LOGE(kTag, "staging slot %u: %u byte alloc FAILED — slot unused",
-                 (unsigned)i, (unsigned)cfg::kStagingMaxBytes);
+                 (unsigned)i, (unsigned)cfg::kStagingInitialBytes);
       }
     }
-    if (s.buf) ++stagingAllocated_;
+    if (s.buf) { s.capacity = cfg::kStagingInitialBytes; ++stagingAllocated_; }
   }
   ready_ = true;
   ESP_LOGI(kTag, "camera ready: QVGA jpeg, staging=%u slot", stagingAllocated_);
+  r.ctrl.status = Status::Ok();
+}
+
+void CameraOwner::handleConfigure(CameraReq& r) {
+  if (!ready_) {
+    r.ctrl.status = Status::Fail(Err::Internal, "camera not ready");
+    return;
+  }
+  if (!r.setSize || r.size == size_) {
+    r.size = size_;
+    r.ctrl.status = Status::Ok();
+    return;
+  }
+  if (!cameraFormat(r.size)) {
+    r.ctrl.status = Status::Fail(Err::InvalidArgument, "unknown camera size");
+    return;
+  }
+  if (streaming_) {
+    r.ctrl.status = Status::Fail(Err::ResourceBusy, "stream active");
+    return;
+  }
+  const CameraSize previous = size_;
+  const esp_err_t stopped = esp_camera_deinit();
+  if (stopped != ESP_OK) {
+    ready_ = false;
+    r.ctrl.status = Status::Fail(Err::Internal, "camera deinit failed");
+    return;
+  }
+  ready_ = false;
+  const Status st = initDriver(r.size);
+  if (!st.ok()) {
+    const Status rollback = initDriver(previous);
+    ready_ = rollback.ok();
+    if (!ready_) ESP_LOGE(kTag, "camera rollback failed");
+    r.ctrl.status = st;
+    return;
+  }
+  size_ = r.size;
+  ready_ = true;
   r.ctrl.status = Status::Ok();
 }
 
@@ -300,26 +388,75 @@ void CameraOwner::handleCapture(CameraReq& r) {
     r.ctrl.status = Status::Fail(Err::ResourceBusy, "stream active");
     return;
   }
-  camera_fb_t* fb = esp_camera_fb_get();
+  camera_fb_t* fb = nullptr;
+  if (r.flash) {
+    if (!flashReady_ || gpio_set_level(kFlashPin, 1) != ESP_OK) {
+      gpio_set_level(kFlashPin, 0);
+      r.ctrl.status = Status::Fail(Err::Internal, "flash LED unavailable");
+      return;
+    }
+    const int flashOnLevel = gpio_get_level(kFlashPin);
+    if (!flashOnLevel) {
+      gpio_set_level(kFlashPin, 0);
+      r.ctrl.status = Status::Fail(Err::Internal, "flash LED did not turn on");
+      return;
+    }
+    // LATEST mode can queue an older frame. Wait for a frame whose first DMA
+    // buffer began after the LED has been on for 100 ms, allowing exposure
+    // to react; bound the loop and always switch the LED off before returning.
+    const int64_t litAt = esp_timer_get_time();
+    for (unsigned i = 0; i < 8; ++i) {
+      fb = esp_camera_fb_get();
+      if (!fb) break;
+      const int64_t frameAt = (int64_t)fb->timestamp.tv_sec * 1000000LL + fb->timestamp.tv_usec;
+      if (frameAt >= litAt + 100000) break;
+      esp_camera_fb_return(fb);
+      fb = nullptr;
+    }
+    const esp_err_t off = gpio_set_level(kFlashPin, 0);
+    const int flashOffLevel = gpio_get_level(kFlashPin);
+    ESP_LOGI(kTag, "flash pulse: gpio4 on=%d off=%d", flashOnLevel, flashOffLevel);
+    if (off != ESP_OK || flashOffLevel != 0) {
+      if (fb) esp_camera_fb_return(fb);
+      r.ctrl.status = Status::Fail(Err::Internal, "flash LED off failed");
+      return;
+    }
+  } else {
+    fb = esp_camera_fb_get();
+  }
   if (!fb) {
     r.ctrl.status = Status::Fail(Err::Internal, "capture failed");
     return;
   }
   if (fb->len > cfg::kStagingMaxBytes) {
     esp_camera_fb_return(fb);
-    r.ctrl.status = Status::Fail(Err::ImageTooLarge, "frame > 96KiB");
+    r.ctrl.status = Status::Fail(Err::ImageTooLarge, "frame > 384KiB");
     return;
   }
-  StagingSlot* s = findFree();
+  StagingSlot* s = selectCaptureSlot();
   if (!s) {
-    // Full pool -> explicit RESOURCE_BUSY; NO silent/pinned eviction.
     esp_camera_fb_return(fb);
     r.ctrl.status = Status::Fail(Err::ResourceBusy, "staging pool full");
     return;
   }
   const size_t len = fb->len;
   const uint16_t w = (uint16_t)fb->width, h = (uint16_t)fb->height;
-  memcpy(s->buf, fb->buf, len);
+  uint8_t* target = s->buf;
+  if (len > s->capacity) {
+    target = static_cast<uint8_t*>(heap_caps_malloc(len, MALLOC_CAP_SPIRAM));
+    if (!target) {
+      esp_camera_fb_return(fb);
+      r.ctrl.status = Status::Fail(Err::Internal, "staging growth failed");
+      return;
+    }
+  }
+  memcpy(target, fb->buf, len);
+  if (s->occupied) ESP_LOGI(kTag, "staging %s replaced by new capture", s->meta.imageId);
+  if (target != s->buf) {
+    heap_caps_free(s->buf);
+    s->buf = target;
+    s->capacity = len;
+  }
   // fb returned to the driver IMMEDIATELY — before filling meta/waiting for a consumer.
   esp_camera_fb_return(fb);
   snprintf(s->meta.imageId, sizeof(s->meta.imageId), "img-%lu",
@@ -331,6 +468,7 @@ void CameraOwner::handleCapture(CameraReq& r) {
   s->meta.pinned = false;
   s->refCount = 0;
   s->occupied = true;
+  s->captureOrder = ++captureOrder_;
   s->lastRefMs = nowMs();  // newly created without refs -> TTL runs from now
   r.meta = s->meta;
   r.ctrl.status = Status::Ok();
@@ -487,13 +625,14 @@ CameraOwner::StagingSlot* CameraOwner::findById(const char* imageId) {
   return nullptr;
 }
 
-CameraOwner::StagingSlot* CameraOwner::findFree() {
-  for (auto& s : slots_) {
-    if (s.buf && !s.occupied && s.refCount == 0) {
-      return &s;
-    }
+CameraOwner::StagingSlot* CameraOwner::selectCaptureSlot() {
+  ImageStagingCandidate candidates[cfg::kStagingPoolSize];
+  for (size_t i = 0; i < cfg::kStagingPoolSize; ++i) {
+    const StagingSlot& s = slots_[i];
+    candidates[i] = {s.buf != nullptr, s.occupied, s.refCount != 0, s.captureOrder};
   }
-  return nullptr;
+  const int index = selectImageStagingSlot(candidates, cfg::kStagingPoolSize);
+  return index < 0 ? nullptr : &slots_[index];
 }
 
 void CameraOwner::sweepExpired(uint32_t now) {

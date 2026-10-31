@@ -101,7 +101,7 @@ void controlme_register_camera(controlme::App& app) {
   // Capabilities fragment — static storage (filled once at register).
   static char s_feature[160];
   snprintf(s_feature, sizeof(s_feature),
-           "{\"camera\":{\"ready\":%s,\"frameSize\":\"QVGA\","
+           "{\"camera\":{\"ready\":%s,\"defaultFrameSize\":\"QVGA\","
            "\"stagingSlots\":%u,\"psramBytes\":%lu}}",
            s_owner.isReady() ? "true" : "false",
            (unsigned)s_owner.stagingSlots(),

@@ -21,7 +21,9 @@
 // Null port mapping (feature not installed): web_* -> ProviderUnavailable,
 // others -> NotSupported. admissionOpen=false -> DeviceRebooting.
 #include "actions/device_actions.h"
+#include "actions/contract_result.h"
 #include "common/psram_alloc.h"
+#include "domain/camera_format.h"
 
 #include <cJSON.h>
 #include <stdarg.h>
@@ -361,6 +363,21 @@ const char* imageMimeOf(const char* path) {
 // ------------------------------------------------------------- tools
 
 using ToolFn = Status (*)(App&, cJSON*, IByteSink&, ToolAttach*);
+
+Status tContract(App& app, cJSON* args, IByteSink& out, ToolAttach*) {
+  if (!app.contracts) return Status::Fail(Err::NotSupported, "contract store unavailable");
+  cJSON* field = cJSON_GetObjectItemCaseSensitive(args, "reference");
+  if (field && (!cJSON_IsString(field) || !field->valuestring))
+    return Status::Fail(Err::InvalidArgument, "reference must be a string");
+  const char* reference = field ? field->valuestring : "";
+  constexpr size_t kTextCap = 3072;
+  constexpr size_t kEscapedCap = 6144;
+  auto text = controlme::psramArr<char>(kTextCap);
+  auto escaped = controlme::psramArr<char>(kEscapedCap);
+  if (!text || !escaped) return Status::Fail(Err::Internal, "contract buffer alloc");
+  return controlme::writeContractResult(*app.contracts, reference, out, text.get(),
+                                        kTextCap, escaped.get(), kEscapedCap);
+}
 
 Status tDeviceStatus(App& app, cJSON*, IByteSink& out, ToolAttach*) {
   JsonBuf jb;
@@ -731,15 +748,39 @@ Status tServoSet(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
   return flushBuf(out, jb);
 }
 
-Status tCameraCapture(App& app, cJSON*, IByteSink& out, ToolAttach* att) {
+Status tCameraConfigure(App& app, cJSON* a, IByteSink& out, ToolAttach*) {
+  if (!app.camera) return Status::Fail(Err::NotSupported, "camera not installed");
+  cJSON* field = cJSON_GetObjectItemCaseSensitive(a, "size");
+  const controlme::CameraFormat* requested = nullptr;
+  if (field) {
+    if (!cJSON_IsString(field) || !field->valuestring)
+      return Status::Fail(Err::InvalidArgument, "size must be a string");
+    requested = controlme::cameraFormatByName(field->valuestring);
+    if (!requested) return Status::Fail(Err::InvalidArgument, "unknown camera size");
+  }
+  controlme::CameraSize active{};
+  Status st = app.camera->configure(requested ? &requested->size : nullptr, active);
+  if (!st.ok()) return st;
+  const auto* format = controlme::cameraFormat(active);
+  if (!format) return Status::Fail(Err::Internal, "unknown active camera size");
+  JsonBuf jb;
+  jb.fmt("{\"size\":\"%s\",\"width\":%u,\"height\":%u,\"ratio\":\"%s\"}",
+         format->name, (unsigned)format->width, (unsigned)format->height, format->ratio);
+  return flushBuf(out, jb);
+}
+
+Status tCameraCapture(App& app, cJSON* a, IByteSink& out, ToolAttach* att) {
   if (!app.camera) {
     return Status::Fail(Err::NotSupported, "camera not installed");
   }
   if (!app.camera->isReady()) {
     return Status::Fail(Err::Internal, "camera not ready");
   }
+  cJSON* flash = cJSON_GetObjectItemCaseSensitive(a, "flash");
+  if (flash && !cJSON_IsBool(flash))
+    return Status::Fail(Err::InvalidArgument, "flash must be a boolean");
   ImageMeta meta{};
-  Status st = app.camera->capture(meta);
+  Status st = app.camera->capture(meta, flash && cJSON_IsTrue(flash));
   if (!st.ok()) return st;
   char url[192];
   fmtImageUrl(app, meta.imageId, url, sizeof(url));
@@ -978,6 +1019,8 @@ struct ToolEntry {
 // tool). description is required on the OpenAI/OpenRouter wire
 // (function.description).
 constexpr ToolEntry kTools[] = {
+    {"contract", "Read ControlMe's core operating guidance; pass reference for a detailed guide. Call this before controlling the device.",
+     "{\"type\":\"object\",\"properties\":{\"reference\":{\"type\":\"string\",\"description\":\"Reference name from the core contract; omit for core\"}}}", &tContract},
     {"device_status", "Read device heap/wifi/uptime status",
      "{\"type\":\"object\",\"properties\":{}}", &tDeviceStatus},
     {"device_reboot", "Reboot the ESP32 device",
@@ -1028,8 +1071,10 @@ constexpr ToolEntry kTools[] = {
      "\"angleDeg\":{\"type\":\"number\"}},\"required\":[\"servoId\","
      "\"angleDeg\"]}",
      &tServoSet},
-    {"camera_capture", "Capture a still JPEG into staging; returns metadata + downloadUrl + the image inline when it fits",
-     "{\"type\":\"object\",\"properties\":{}}", &tCameraCapture},
+    {"camera_capture", "Capture a JPEG; optional flash blinks only during capture (default off). Replaces the oldest unpinned image when staging is full.",
+     "{\"type\":\"object\",\"properties\":{\"flash\":{\"type\":\"boolean\",\"default\":false}}}", &tCameraCapture},
+    {"camera_configure", "Get or set camera image size; each preset determines its aspect ratio. Reinitializes camera; resets to QVGA on reboot. Large JPEGs may exceed staging.",
+     "{\"type\":\"object\",\"properties\":{\"size\":{\"type\":\"string\",\"enum\":[\"QQVGA\",\"240X240\",\"QVGA\",\"CIF\",\"HVGA\",\"VGA\",\"SVGA\",\"XGA\",\"HD\",\"SXGA\",\"UXGA\"]}}}", &tCameraConfigure},
     {"image_read", "Read a staged image by id or SD path; returns metadata + downloadUrl; staged images also come back inline when they fit",
      "{\"type\":\"object\",\"properties\":{\"imageId\":{\"type\":\"string\"},"
      "\"path\":{\"type\":\"string\"}}}",
@@ -1061,6 +1106,7 @@ const ToolEntry* findTool(const char* name) {
 // actually installed — the LLM must not waste turns calling a tool that is
 // certain to fail.
 bool toolWired(const App& app, const ToolEntry& t) {
+  if (t.fn == &tContract) return app.contracts != nullptr;
   if (t.fn == &tWebSearch) return app.webSearch != nullptr;
   if (t.fn == &tWebFetch) return app.webFetch != nullptr;
   return true;

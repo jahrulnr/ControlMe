@@ -58,6 +58,7 @@ or npm build script.
 | --- | --- |
 | Build firmware | `pio run -e esp32cam` |
 | Test pure libraries | `bash test/run_host_tests.sh` |
+| Test contract storage adapter with a fake LittleFS | `bash test/run_contract_tests.sh` |
 | Check viewer syntax | `node --check docs/board-components.js && node --check docs/board-model.js && node --check docs/board-viewer.js` |
 | Serve local documentation | `python3 -m http.server 8000 --bind 127.0.0.1 --directory docs` |
 | Monitor serial when needed | `pio device monitor -e esp32cam` |
@@ -84,8 +85,9 @@ from a CDN through an import map, not an npm dependency.
   advertised when their adapters are installed.
 - Capabilities come from module registration, not a wishlist. `App::addFeature`
   stores a pointer, so JSON fragments must have static lifetime.
-- LittleFS stores runtime logs, not a UI bundle. There is no need for `uploadfs`;
-  do not format the log filesystem or combine `upload`/`uploadfs` targets.
+- LittleFS stores runtime logs and the bundled agent contracts, not a UI bundle.
+  Contracts are embedded in the firmware and installed at startup; there is no
+  need for `uploadfs`. Do not combine `upload`/`uploadfs` targets.
 - Register storage before servos; the coordinator captures `app.storage` at
   construction. Coordinated SD mounting happens before pan PWM is enabled.
 - The [hardware pin map](docs/05-hardware-pins.md) still says GPIO13 stays HIGH
